@@ -2368,14 +2368,20 @@ function modalFilterValues() {
   const row = modalFilterRow;
   const entry = row.entry;
   const base = suggestionFor(entry);
-  const prices = sellingPrices(entry, null);
+  // Preissprung (02.10.2026): Rechnet base mit dem kleineren, vorigen
+  // Marktpreis (unbestaetigter Sprung nach oben), muessen auch die
+  // Verkaufsmodi Schnell/Geduldig darauf beruhen. Sonst hob shift den
+  // Kaufpreis wieder auf das Niveau des Sprungpreises. Keine Anfrage.
+  const sprungVorher = base.verkauf && base.verkauf.grund === "sprung" && base.preisSprung ? Number(base.preisSprung.vorher) || 0 : 0;
+  const preisEintrag = sprungVorher > 0 ? Object.assign({}, entry, { market: sprungVorher, alter: null, preisSprung: null }) : entry;
+  const prices = sellingPrices(preisEintrag, null);
   // Normal ist der Verkaufspreis aus suggestionFor, den auch die Karte zeigt -
   // also Marktpreis oder der Preis nach Alter (F1). Mit entry.market waere der
   // Abschlag nach Alter im Modus Normal wieder weg.
   const salePrice = modalSaleMode === "safe" ? prices.safe : modalSaleMode === "lazy" ? prices.lazy : base.verkaufspreis;
   const saleNet = Math.floor(salePrice * (1 - SALE_FEE));
   const input = Math.max(0, Number($("fm-profit-value").value) || 0);
-  const wantedProfit = modalProfitMode === "percent" ? Math.floor(salePrice * input / 100) : modalProfitMode === "coins" ? Math.floor(input) : intelligentProfit(entry);
+  const wantedProfit = modalProfitMode === "percent" ? Math.floor(salePrice * input / 100) : modalProfitMode === "coins" ? Math.floor(input) : intelligentProfit(preisEintrag);
   const shift = saleNet - base.saleNet; // Zu- oder Abschlag durch den Verkaufsmodus
   const verschoben = shift ? roundDownToStep(base.value + shift) : base.value;
   let maxPrice = Math.max(0, Math.min(verschoben, roundDownToStep(saleNet - wantedProfit)));
@@ -2387,7 +2393,7 @@ function modalFilterValues() {
   //
   // Vor den EA-Grenzen: EAs Mindestpreis ist ein harter Boden und darf
   // weiterhin anheben.
-  if (Number(entry.market) > 0) maxPrice = Math.min(maxPrice, roundDownToStep(entry.market));
+  if (Number(preisEintrag.market) > 0) maxPrice = Math.min(maxPrice, roundDownToStep(preisEintrag.market));
   if (entry.eaMin && maxPrice < entry.eaMin) maxPrice = entry.eaMin;
   if (entry.eaMax && maxPrice > entry.eaMax) maxPrice = entry.eaMax;
   return { salePrice, saleNet, wantedProfit, maxPrice, expectedProfit: maxPrice > 0 ? saleNet - maxPrice : 0 };

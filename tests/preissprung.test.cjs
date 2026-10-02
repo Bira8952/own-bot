@@ -16,6 +16,8 @@ const listPreis = content.slice(content.indexOf('  async function listPreisFuer(
 const preisCheck = content.slice(content.indexOf('  async function runPriceCheck('), content.indexOf('  function startPriceCheck('));
 const popupPreise = popup.slice(popup.indexOf('let priceTiers = null;'), popup.indexOf('function sellingPrices('));
 const popupVorschlag = popup.slice(popup.indexOf('function discountValue('), popup.indexOf('const LEERLAUF_SUCHEN'));
+const popupVerkaufspreise = popup.slice(popup.indexOf('function sellingPrices('), popup.indexOf('function stamp('));
+const popupDialog = popup.slice(popup.indexOf('function modalFilterValues('), popup.indexOf('function renderFilterModal('));
 const popupVerkauf = popup.slice(popup.indexOf('function verkaufPreisEintrag('), popup.indexOf('function verkaufGewinnElement('));
 
 const MIN = 60000;
@@ -202,6 +204,42 @@ test('suggestionFor: nach einem Sprung nach unten ist der neue Preis schon der k
 test('suggestionFor: ohne Markierung ist das Ergebnis unveraendert', () => {
   const c = popupKontext();
   assert.deepEqual(vorschlag(c, { market: 13500, lowest: 13000, preisSprung: null }), vorschlag(c, { market: 13500, lowest: 13000 }));
+});
+
+// --- Popup: Filter-Dialog (02.10.2026) ------------------------------------------
+// Schnell/Geduldig verschieben den Kaufpreis um den Unterschied im Erloes.
+// Dieser Unterschied muss mit demselben (kleineren) Preis rechnen wie die
+// Karte - sonst landet der Kaufpreis wieder beim unbestaetigten Sprungpreis.
+
+function dialogWerte(entry, modus, gewinnModus) {
+  const c = popupKontext();
+  vm.runInContext(popupVerkaufspreise, c);
+  vm.runInContext(popupDialog, c);
+  c.row = { entry };
+  c.modus = modus;
+  c.gewinnModus = gewinnModus || 'auto';
+  vm.runInContext('var modalFilterRow = row; var modalSaleMode = modus; var modalProfitMode = gewinnModus;', c);
+  const alt$ = c.$;
+  c.$ = (id) => (id === 'fm-profit-value' ? { value: '0' } : alt$(id));
+  return plain(vm.runInContext('modalFilterValues()', c));
+}
+
+test('Filter-Dialog: Schnell/Geduldig umgehen den Preissprung-Schutz nicht', () => {
+  const sprung = { market: 20000, lowest: 19500, preisSprung: { vorher: 10000 } };
+  const alt = { market: 10000, lowest: 19500 };
+  for (const modus of ['safe', 'normal', 'lazy']) {
+    const s = dialogWerte(sprung, modus);
+    const a = dialogWerte(alt, modus);
+    assert.equal(s.maxPrice, a.maxPrice, modus + ': Kaufpreis wie beim vorigen Marktpreis');
+    assert.ok(s.maxPrice <= 10000, modus + ': nie ueber dem vorigen Marktpreis');
+  }
+  assert.ok(dialogWerte(sprung, 'safe', 'coins').maxPrice <= 10000);
+});
+
+test('Filter-Dialog: ohne Sprung nach oben bleibt alles wie bisher', () => {
+  for (const modus of ['safe', 'normal', 'lazy']) {
+    assert.deepEqual(dialogWerte({ market: 6000, preisSprung: { vorher: 10000 } }, modus), dialogWerte({ market: 6000 }, modus));
+  }
 });
 
 // --- Popup: Verkaufs-Helfer (Verkaufen: der groessere Preis) -------------------
