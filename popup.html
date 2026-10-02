@@ -1130,10 +1130,12 @@
           <!-- 27.09.2026 richtiggestellt: Hier stand "er wartet den Rest der
                Stunde". Das tat er nicht - der Code hoerte nach 15 Minuten
                Warten auf. Das ist jetzt behoben, aber die Laufzeit beendet den
-               Lauf oft noch vorher. Beides steht nun da. -->
-          <p class="hint warn">Der Bot sucht seit dem 25.09. im Tempo von FUT Simple Trader. Das sind rund 4 Sekunden je Suche statt 12. Das Stundenlimit von 150 Suchen ist damit schon nach rund 15 Minuten erreicht. Danach wartet der Bot, bis die Stunde wieder Platz hat. Das können 45 Minuten sein. Wer hochdreht, geht ein Risiko bewusst ein: EA hat dieses Konto am 21.09. bei rund 450 Suchen am Tag gesperrt (Fehler 521).</p>
+               Lauf oft noch vorher. Beides steht nun da.
+               02.10.2026: Seitdem verteilt der Bot die Suchen gleichmaessig
+               ueber die Stunde (content.js suchWarteMs). Die Texte hier sagen das jetzt. -->
+          <p class="hint warn">Der Bot verteilt die Suchen gleichmäßig über die Stunde: bei 150 Suchen frühestens alle 24 Sekunden eine (3600 Sekunden geteilt durch das Stundenlimit). So ist das Stundenlimit nicht nach einer Viertelstunde verbraucht, und es gibt keine lange Wartepause. Eine höhere Grenze verkürzt den Abstand, bei 200 auf 18 Sekunden. Wer hochdreht, geht ein Risiko bewusst ein: EA hat dieses Konto am 21.09. bei rund 450 Suchen am Tag gesperrt (Fehler 521).</p>
           <details class="mehr"><summary>Mehr erfahren</summary>
-            <p class="hint">Der Bot wartet nur, solange die eingestellte Laufzeit noch läuft. Bei der Standard-Laufzeit von 30 Minuten endet der Lauf vorher. Wer durchgehend suchen will, lässt das Feld Laufzeit leer.</p>
+            <p class="hint">Warten muss der Bot nur noch, wenn die Stunde trotzdem voll ist, zum Beispiel durch Preis-Checks oder Scans. Er wartet nur, solange die eingestellte Laufzeit noch läuft. Wer durchgehend suchen will, lässt das Feld Laufzeit leer.</p>
             <p class="hint">FUT Simple Trader hat kein Stundenlimit. Wir haben eins, weil EA dieses Konto am 21.09. gesperrt hat.</p>
           </details>
           <div class="grid2">
@@ -1227,10 +1229,10 @@
       <h4 id="hilfe-buys">Reiter Käufe › Dieser Lauf</h4>
       <ul>
         <li data-modus="fst" hidden><b>Scans</b>: Suchen auf dem Transfermarkt. Ohne eigene Grenzen gibt es keine Obergrenze pro Stunde oder pro Tag. Das Tempo stellst du im Start-Dialog ein. Dazu kommen die Pausen („Wie FST“: nach 25 bis 46 Suchen 21 bis 39 Sekunden).</li>
-        <li data-modus="streng"><b>Scans</b>: Suchen auf dem Transfermarkt. Die 150 Suchen pro Stunde sind nach gut einer Viertelstunde aufgebraucht. Danach wartet der Bot bis zur nächsten Stunde.
+        <li data-modus="streng"><b>Scans</b>: Suchen auf dem Transfermarkt. Der Bot verteilt die 150 Suchen pro Stunde gleichmäßig, frühestens alle 24 Sekunden eine.
         <details class="mehr"><summary>Mehr erfahren</summary>
-          <p class="hint">Das Tempo stellst du im Start-Dialog ein. Dazu kommen die Sicherheitspausen. Rund 4,6 Sekunden je Suche bei <b>Sicher</b>, 3,9 bei <b>Normal</b>, 3,0 bei <b>Turbo</b>.</p>
-          <p class="hint">Seit dem 25.09.2026 sucht der Bot im Tempo von FUT Simple Trader. Vorher waren es 12 bis 17 Sekunden je Suche. Die reine Suchzeit für 150 Suchen beträgt etwa zehn Minuten. Mit den Sicherheitspausen sind es gut eine Viertelstunde.</p>
+          <p class="hint">Das Tempo stellst du im Start-Dialog ein. Dazu kommen die Sicherheitspausen. Rund 10,7 Sekunden je Suche bei <b>Konto-schonend</b>, 4,6 bei <b>Sicher</b>, 3,9 bei <b>Normal</b>, 3,0 bei <b>Turbo</b>. Im strengen Modus gilt zusätzlich eine Untergrenze ab Beginn der letzten Suche: 3600 Sekunden geteilt durch das Stundenlimit, bei 150 also 24 Sekunden. Sie bestimmt dort meist den Takt.</p>
+          <p class="hint">Seit dem 25.09.2026 sucht der Bot im Tempo von FUT Simple Trader. Vorher waren es 12 bis 17 Sekunden je Suche. Bis zum 02.10.2026 waren die 150 Suchen damit nach gut einer Viertelstunde aufgebraucht, danach kam eine lange Wartepause. Seitdem verteilt der Bot sie über die Stunde.</p>
         </details>
         </li>
         <li><b>Gebote</b>: abgegebene Gebote. Ein Gebot ist noch kein gewonnener Spieler. Fahr mit der Maus darüber. Dann siehst du, wie viele gewonnen und verloren sind.</li>
@@ -1300,7 +1302,7 @@
         <li data-modus="streng"><b>Schutzgrenzen</b>: 150 Suchen pro Stunde, 350 am Tag, dazu Grenzen für Käufe und ein Deckel über allem. Diese Zahlen schützen dein Konto. EA hat schon bei rund 450 Suchen am Tag gesperrt. Höher stellen heißt: Sperre riskieren.</li>
         <li data-modus="streng"><b>Eigene Grenzen</b>: Hier setzt du die beiden Suchgrenzen selbst. Leer heißt Standard: 150 pro Stunde und 350 pro Tag. Was über 150 bzw. 350 liegt, wird gelb. Das ist eine Warnung, kein Fehler.
         <details class="mehr"><summary>Mehr erfahren</summary>
-          <p class="hint">Der Kasten rechnet vor, wie lange die Stundengrenze beim eingestellten Tempo hält. Bei Normal und 150 Suchen sind das etwa zehn Minuten reine Suchzeit.</p>
+          <p class="hint">Der Kasten rechnet vor, in welchem Abstand der Bot die Suchen der Stunde verteilt. Bei 150 Suchen ist das rund alle 26 Sekunden eine, bei 200 rund alle 19.</p>
         </details>
         </li>
         <li data-modus="streng"><b>Ausnahme vom Tageslimit</b>: Hebt für 6 Stunden nur die Suchen pro Tag an, mit Rückfrage. Das Stundenlimit bleibt.</li>
@@ -1410,7 +1412,7 @@
       <div class="modal-panel">
         <div class="modal-panel-head"><span class="ico ico-bolt">Schnellprofil</span></div>
         <div class="segmented" id="sm-profile" role="group" aria-label="Schnellprofil">
-          <button type="button" data-value="safe">Sicher</button><button type="button" data-value="balanced">Ausgewogen</button><button type="button" data-value="intense">Intensiv</button>
+          <button type="button" data-value="schonend" aria-label="Konto-schonend" title="Konto-schonend: 8–14 s je Suche, höchstens 6 Suchen pro Minute, alle 12–18 Suchen 1–2 Min. Pause, höchstens 90 Min. Laufzeit">Schonend</button><button type="button" data-value="safe">Sicher</button><button type="button" data-value="balanced">Ausgewogen</button><button type="button" data-value="intense">Intensiv</button>
         </div>
         <p id="sm-budget-info" class="modal-result"></p>
       </div>
@@ -1423,7 +1425,7 @@
           <div class="tune-head"><b>Tempo</b><span class="segmented tune-mode" role="group" aria-label="Tempo"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
           <p class="tune-auto">Normal · mittleres Risiko</p>
           <div class="tune-custom" hidden>
-            <select id="speedMode"><option value="safe">Sicher – langsam, wenig auffällig</option><option value="normal">Normal – ausgewogen</option><option value="turbo">Turbo – schnell, mehr Risiko</option></select>
+            <select id="speedMode"><option value="schonend">Konto-schonend – 8 bis 14 s, höchstens 6 Suchen pro Minute</option><option value="safe">Sicher – langsam, wenig auffällig</option><option value="normal">Normal – ausgewogen</option><option value="turbo">Turbo – schnell, mehr Risiko</option></select>
           </div>
         </div>
 
@@ -1436,7 +1438,7 @@
                  Standard. Die Beschriftung sagt, wann es etwas bringt: Pausen
                  kosten keine Suche, sie verteilen sie nur - ohne sie ist die
                  Stunde nur schneller voll. -->
-            <select id="pausePreset"><option value="fst" hidden>Wie FST – nach 25 bis 46 Suchen 21 bis 39 Sekunden Pause</option><option value="short">Kurz und selten</option><option value="medium">Ausgewogen</option><option value="long">Lang und häufiger</option><option value="off">Keine Pausen – bringt nur etwas mit angehobener Stundengrenze</option></select>
+            <select id="pausePreset"><option value="fst" hidden>Wie FST – nach 25 bis 46 Suchen 21 bis 39 Sekunden Pause</option><option value="short">Kurz und selten</option><option value="medium">Ausgewogen</option><option value="long">Lang und häufiger</option><option value="schonend">Konto-schonend – alle 12 bis 18 Suchen 1 bis 2 Minuten</option><option value="off">Keine Pausen – bringt nur etwas mit angehobener Stundengrenze</option></select>
           </div>
         </div>
 

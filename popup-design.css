@@ -4393,6 +4393,13 @@ button.go:disabled {
   color: #11161d;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
 }
+/* Schnellprofil mit vier Knoepfen (02.10.2026, dazu kam "Konto-schonend").
+   Gemessen: Unter rund 355px Breite liefen sie ueber den Rand. Dort brechen
+   sie in zwei Reihen zu je zwei um. Bei den 415px der Leiste bleibt es eine. */
+#sm-profile { flex-wrap: wrap; }
+@media (max-width: 359px) {
+  #sm-profile button { flex-basis: calc(50% - 2px); }
+}
 
 /* --- Felder (FST .form-control, Z. 1859-1888). Die Grundwerte stehen oben
        bei input, select; hier nur Bewegung und Hover. Kein Hintergrundwechsel

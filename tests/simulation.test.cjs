@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { virtuelleUhr } = require('./sim/uhr.cjs');
 const { simLabor, AUFTRAG } = require('./sim/labor.cjs');
-const { kassensturz, limitsGeprueft, drosselungGeprueft } = require('./sim/kassensturz.cjs');
+const { kassensturz, limitsGeprueft, drosselungGeprueft, fensterMax } = require('./sim/kassensturz.cjs');
 
 // ===========================================================================
 // Die grosse Simulation.
@@ -121,7 +121,11 @@ test('vereinzelte Serverfehler werfen den Bot nicht um', async () => {
       anteilSchnaeppchen: 0, // nichts zu kaufen - hier geht es nur ums Ueberleben
       // 429 ist inzwischen absichtlich ein harter Stopp und wird im naechsten
       // Szenario geprueft. Hier geht es um vereinzelte normale Serverfehler.
-      stuerme: [{ nachMs: 2 * MIN, dauerMs: 6 * MIN, art: 'status', status: 500, anteil: 0.1 }]
+      // 02.10.2026: Sturm von 6 auf 16 Minuten verlaengert. Mit dem
+      // gleichmaessigen Tempo im strengen Modus (rund 25 s je Suche) lagen
+      // im alten Fenster nur noch gut 15 Suchen - bei 10 Prozent Fehlern
+      // traf dann keine einzige einen 500er.
+      stuerme: [{ nachMs: 2 * MIN, dauerMs: 16 * MIN, art: 'status', status: 500, anteil: 0.1 }]
     }
   });
   await l.uhr.vorspulen(100);
@@ -294,41 +298,101 @@ test('Gebotskrieg: jedes Gebot bekommt seinen Ausgang, keine Coin bleibt haengen
 });
 
 // ---------------------------------------------------------------------------
-// Szenario 5: Volle Geschwindigkeit gegen die Schutzlimits. Im Turbo-Tempo
-// muss der Bot GENAU beim Stundenlimit (300 Suchen) von selbst anhalten -
-// die Welt zaehlt von aussen nach, was wirklich bei EA ankam.
+// Szenario 5: Volle Geschwindigkeit gegen die Schutzlimits.
+// 02.10.2026: Im strengen Modus verteilt der Bot die Suchen gleichmaessig
+// ueber die Stunde (content.js suchWarteMs). Vorher war das Stundenlimit im
+// Turbo-Tempo nach gut 10 Minuten Dauerfeuer verbraucht, danach kam eine
+// lange Wartepause. Darum zwei Tests statt einem: die Verteilung selbst, und
+// die Wartepause am Stundenlimit, die es weiterhin gibt (Preis-Checks, Scans
+// oder ein Lauf kurz nach dem vorigen fuellen die Stunde trotzdem).
 // ---------------------------------------------------------------------------
 
-test('Turbo-Tempo: am Stundenlimit wartet der Bot und setzt danach fort', async () => {
-  const spielerListe = [
-    { playerId: 231747, assetId: 231747, resourceId: 50231747, rating: 84, rareflag: 1 },
-    { playerId: 190871, assetId: 190871, resourceId: 50190871, rating: 86, rareflag: 1 },
-    { playerId: 158023, assetId: 158023, resourceId: 50158023, rating: 87, rareflag: 1 }
-  ];
-  const l = simLabor({ samen: 5, welt: { spielerListe, anteilSchnaeppchen: 0 } });
+const SPIELER_DREI = [
+  { playerId: 231747, assetId: 231747, resourceId: 50231747, rating: 84, rareflag: 1 },
+  { playerId: 190871, assetId: 190871, resourceId: 50190871, rating: 86, rareflag: 1 },
+  { playerId: 158023, assetId: 158023, resourceId: 50158023, rating: 87, rareflag: 1 }
+];
+const ZIELE_DREI = [
+  { playerId: 231747, playerName: 'Spieler A', rating: 84, maxPrice: 1000 },
+  { playerId: 190871, playerName: 'Spieler B', rating: 86, maxPrice: 1000 },
+  { playerId: 158023, playerName: 'Spieler C', rating: 87, maxPrice: 1000 }
+];
+const suchZeiten = (welt) => welt.buch.anfragen.filter((a) => a.url.includes('/transfermarket?')).map((a) => a.t);
+
+test('strenger Modus: Suchen gleichmaessig ueber die Stunde verteilt', async () => {
+  const l = simLabor({ samen: 5, welt: { spielerListe: SPIELER_DREI, anteilSchnaeppchen: 0 } });
   await l.uhr.vorspulen(100);
 
   const cfg = Object.assign({}, AUFTRAG, {
-    targets: [
-      { playerId: 231747, playerName: 'Spieler A', rating: 84, maxPrice: 1000 },
-      { playerId: 190871, playerName: 'Spieler B', rating: 86, maxPrice: 1000 },
-      { playerId: 158023, playerName: 'Spieler C', rating: 87, maxPrice: 1000 }
-    ],
+    targets: ZIELE_DREI,
     speedMode: 'turbo',
     pausePreset: 'short',
     filterSearchLimit: 150
   });
   assert.equal((await l.senden('start', { cfg })).ok, true);
-  await l.uhr.vorspulen(90 * MIN);
+
+  // Je 10 Minuten hoechstens 26 Suchen (150 / 6 = 25 plus Luft). Vorher
+  // waren es im ersten Fenster ueber 100, danach lange gar keine.
+  let bisher = 0;
+  for (let fenster = 1; fenster <= 9; fenster++) {
+    await l.uhr.vorspulen(10 * MIN);
+    const jetzt = suchZeiten(l.welt).length;
+    assert.ok(jetzt - bisher <= 26, 'Fenster ' + fenster + ': ' + (jetzt - bisher) + ' Suchen in 10 Minuten - das ist Ballung');
+    assert.ok(jetzt - bisher >= 15, 'Fenster ' + fenster + ': nur ' + (jetzt - bisher) + ' Suchen - der Bot steht still');
+    bisher = jetzt;
+  }
 
   const status = (await l.senden('status')).status;
-  assert.equal(status.running, true, 'am Stundenlimit soll der Lauf warten statt enden: ' + status.message);
-  assert.match(status.message, /Stundenlimit voll/);
-  assert.equal(status.stats.scans, 300, 'in 90 Minuten passen zwei Fenster mit je 150 Suchen');
+  await l.senden('stop');
+  await l.uhr.vorspulen(5000);
+  assert.equal(status.running, true, 'der Lauf muss weiterlaufen: ' + status.message);
+  assert.doesNotMatch(status.message, /Stundenlimit voll/, 'bei gleichmaessigem Tempo wird die Stunde nicht voll');
+
+  // Von aussen gemessen: zwischen zwei Suchen bei EA mindestens 24 s
+  // (3600 s / 150).
+  const zeiten = suchZeiten(l.welt);
+  let kleinsterAbstand = Infinity;
+  for (let i = 1; i < zeiten.length; i++) kleinsterAbstand = Math.min(kleinsterAbstand, zeiten[i] - zeiten[i - 1]);
+  assert.ok(kleinsterAbstand >= 24000, 'kleinster Abstand ' + kleinsterAbstand + ' ms - erlaubt sind mindestens 24000');
 
   const limits = limitsGeprueft(l.welt);
   assert.ok(limits.sucheStundeMax <= 150, 'bei EA kamen ' + limits.sucheStundeMax + ' Suchen in einer Stunde an - erlaubt sind 150');
-  assert.ok(limits.sucheStundeMax >= 145, 'das Limit soll ausgereizt, aber nicht gerissen werden: ' + limits.sucheStundeMax);
+  assert.ok(limits.sucheStundeMax >= 120, 'die Stunde soll trotzdem gut genutzt werden: ' + limits.sucheStundeMax);
+  assert.ok(status.stats.scans >= 180 && status.stats.scans <= 230, 'in 90 Minuten rund 200 Suchen, waren: ' + status.stats.scans);
+  assert.deepEqual(l.uhr.fehler, []);
+});
+
+test('am Stundenlimit wartet der Bot und setzt danach fort', async () => {
+  const l = simLabor({ samen: 5, welt: { spielerListe: SPIELER_DREI, anteilSchnaeppchen: 0 } });
+  await l.uhr.vorspulen(100);
+  // Die Stunde ist schon fast voll: 145 Suchen aus einem frueheren Lauf,
+  // die aelteste vor 55 Minuten, dann alle 20 Sekunden eine.
+  const alt = [];
+  for (let i = 0; i < 145; i++) alt.push(l.uhr.jetzt - 55 * MIN + i * 20000);
+  l.speicher.safetyUsage = { searches: alt, buys: [], aktionen: [], cards: {} };
+
+  const cfg = Object.assign({}, AUFTRAG, {
+    targets: ZIELE_DREI,
+    speedMode: 'turbo',
+    pausePreset: 'short',
+    filterSearchLimit: 150
+  });
+  assert.equal((await l.senden('start', { cfg })).ok, true);
+
+  await l.uhr.vorspulen(3 * MIN);
+  let status = (await l.senden('status')).status;
+  assert.equal(status.running, true, 'am Stundenlimit soll der Lauf warten statt enden: ' + status.message);
+  assert.match(status.message, /Stundenlimit voll/);
+  assert.equal(status.stats.scans, 5, 'nur 5 Suchen passten noch in diese Stunde');
+
+  await l.uhr.vorspulen(20 * MIN);
+  status = (await l.senden('status')).status;
+  await l.senden('stop');
+  await l.uhr.vorspulen(5000);
+  assert.equal(status.running, true, 'nach der Wartepause geht es weiter: ' + status.message);
+  assert.ok(status.stats.scans > 5, 'nach der Wartepause muss weiter gesucht worden sein, Scans: ' + status.stats.scans);
+  const imFenster = fensterMax(alt.concat(suchZeiten(l.welt)), STUNDE);
+  assert.ok(imFenster <= 150, 'mit den alten Suchen kamen ' + imFenster + ' in eine Stunde - erlaubt sind 150');
   assert.deepEqual(l.uhr.fehler, []);
 });
 

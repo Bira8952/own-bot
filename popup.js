@@ -1604,12 +1604,14 @@ function prozentAufgerundet(anteil) {
 // nachzieht, aendert dann leicht nur eine davon - und zwei Anzeigen, die
 // dasselbe meinen, zeigen verschiedene Zahlen. Genau so lief beim
 // Verkaufspreis der Bildschirm gegen den Bot.
+// "Konto-schonend" (02.10.2026): content.js wuerfelt im Mittel 10,6 s, die
+// 10-s-Untergrenze ab Suchbeginn (suchWarteMs) hebt das um rund 0,1 s.
 function tempoSekunden(tempo) {
-  return tempo === "safe" ? 4.6 : tempo === "turbo" ? 3.0 : 3.9;
+  return tempo === "schonend" ? 10.7 : tempo === "safe" ? 4.6 : tempo === "turbo" ? 3.0 : 3.9;
 }
 
 function tempoName(tempo) {
-  return tempo === "safe" ? "Langsam" : tempo === "turbo" ? "Turbo" : "Normal";
+  return tempo === "schonend" ? "Konto-schonend" : tempo === "safe" ? "Langsam" : tempo === "turbo" ? "Turbo" : "Normal";
 }
 
 function gewinnProStunde(stats, suggestion, usage) {
@@ -3075,7 +3077,8 @@ function laufzeitRechnung(st) {
     const pvF = $("pausePreset") ? $("pausePreset").value : "fst";
     // FST: alle 25-46 Suchen 21-39 s, jede 2.-4. Pause 63-117 s: im Mittel
     // rund 50 s je Pause bei 35 Suchen. Die anderen Stufen wie in content.js.
-    const pAlleF = pvF === "off" ? 0 : pvF === "fst" ? 35 : pvF === "long" ? 30 : 45;
+    // "schonend" (02.10.2026): alle 12-18 Suchen 60-120 s, im Mittel 15 und 90.
+    const pAlleF = pvF === "off" ? 0 : pvF === "fst" ? 35 : pvF === "schonend" ? 15 : pvF === "long" ? 30 : 45;
     const pSekF = pvF === "fst" ? 50 : (pvF === "long" ? 180 : pvF === "short" ? 45 : 90) * 1.425;
     const pauseJeSucheF = pAlleF > 0 ? pSekF / pAlleF : 0;
     const proStundeF = Math.max(1, Math.floor(3600 / (sekundenF + pauseJeSucheF)));
@@ -3100,13 +3103,18 @@ function laufzeitRechnung(st) {
   const tempo = $("speedMode") ? $("speedMode").value : "normal";
   const sekunden = tempoSekunden(tempo);
   const name = tempoName(tempo);
-  const minuten = Math.round((proStunde * sekunden) / 60);
+  // Gleichmaessiges Tempo (02.10.2026): content.js (gleichmaessigAbstandMs)
+  // laesst zwischen zwei Suchen mindestens 3600 s / Stundenlimit, plus 0 bis
+  // 15 Prozent Zufall nach oben - im Mittel das 1,075-fache. Bei 150 Suchen
+  // sind das rund 26 s, mehr als jedes Tempo allein.
+  const abstand = Math.max(sekunden, (3600 / proStunde) * 1.075);
+  const minuten = Math.round((proStunde * abstand) / 60);
   // Die Sicherheitspausen gehoeren in die Rechnung (27.09.2026). Sie kosten
   // keine einzige Suche, aber sie verteilen dieselben Suchen ueber mehr Zeit.
   // Ohne sie stand hier eine Zahl, die der Bot nie erreicht. Dieselben Werte
   // wie in content.js breakPlan.
   const pv = $("pausePreset") ? $("pausePreset").value : "medium";
-  const pAlle = pv === "off" ? 0 : pv === "long" ? 30 : 45;
+  const pAlle = pv === "off" ? 0 : pv === "schonend" ? 15 : pv === "long" ? 30 : 45;
   const pSek = pv === "long" ? 180 : pv === "short" ? 45 : 90;
   // Jede vierte Pause ist die lange: das 2,7-fache der normalen. So macht es
   // content.js (breakPlan), abgeschaut bei FUT Simple Trader (scripts.js
@@ -3115,7 +3123,10 @@ function laufzeitRechnung(st) {
   // Faktor war die Anzeige zu knapp: Sie nannte 5 Min. Pause, der Bot machte
   // rund 7 (28.09.2026).
   const PAUSEN_FAKTOR = 1.425;
-  const pauseJeSucheSek = pAlle > 0 ? (pSek * PAUSEN_FAKTOR) / pAlle : 0;
+  // 02.10.2026: Eine Pause ersetzt den Teil des Abstands, der nach ihr nicht
+  // mehr gewartet wird (content.js rechnet die Zeit seit Suchbeginn an). Ohne Verteilung
+  // (abstand = sekunden) ist das genau die alte Formel.
+  const pauseJeSucheSek = pAlle > 0 ? Math.max(0, pSek * PAUSEN_FAKTOR - (abstand - sekunden)) / pAlle : 0;
   const pausenMin = Math.round((proStunde * pauseJeSucheSek) / 60);
   const bruttoMin = minuten + pausenMin;
   // Ein leeres Feld heisst "kein Zeitlimit" - content.js setzt dann 300 Min.
@@ -3135,7 +3146,10 @@ function laufzeitRechnung(st) {
     // Eine Suche samt ihrem Anteil an den Pausen, in Sekunden. Fuer die
     // Start-Schaetzung - damit dort nicht noch einmal gerechnet wird
     // (28.09.2026).
-    sekundenBrutto: sekunden + pauseJeSucheSek
+    sekundenBrutto: abstand + pauseJeSucheSek,
+    // Abstand zwischen zwei Suchbeginnen ohne Pausen (02.10.2026). Groesser
+    // als sekunden heisst: Der Bot verteilt die Suchen ueber die Stunde.
+    abstand
   };
 }
 
@@ -3172,8 +3186,13 @@ function renderLaufzeit(st) {
     text = r.laufzeit >= 300
       ? "Ohne Zeitlimit \u00b7 der Bot l\u00e4uft, bis das Tagesbudget oder die Filter zu Ende sind"
       : r.laufzeit + " Minuten \u00b7 kurze L\u00e4ufe fallen weniger auf";
-    el.title = "Die " + r.proStunde + " Suchen dieser Stunde reichen bei Tempo \u201e" + r.name +
-      "\u201c f\u00fcr rund " + r.bruttoMin + " Minuten \u2013 das deckt die eingestellte Laufzeit ab.";
+    // Gleichmaessiges Tempo (02.10.2026): Im strengen Modus wird die Stunde
+    // nicht mehr verbraucht, sondern verteilt. Im FST-Modus fehlt r.abstand.
+    el.title = r.abstand > r.sekunden
+      ? "Der Bot verteilt die " + r.proStunde + " Suchen der Stunde gleichm\u00e4\u00dfig: rund alle " +
+        Math.round(r.abstand) + " Sekunden eine. So ist die Stunde nicht nach wenigen Minuten verbraucht, und es gibt keine lange Wartepause."
+      : "Die " + r.proStunde + " Suchen dieser Stunde reichen bei Tempo \u201e" + r.name +
+        "\u201c f\u00fcr rund " + r.bruttoMin + " Minuten \u2013 das deckt die eingestellte Laufzeit ab.";
   }
   if (el.textContent !== text) el.textContent = text;
   el.classList.toggle("tune-auto-warn", r.endetDurchStunde);
@@ -3204,10 +3223,20 @@ function renderGrenzen(st) {
   const pausenMin = r.pausenMin;
   const bruttoMin = r.bruttoMin;
   const laufzeit = r.laufzeit;
-  teile.push("Bei Tempo „" + name + "“ (rund " + sekunden.toLocaleString("de-DE") + " Sek. je Suche) sind " +
-    proStunde + " Suchen nach etwa " + bruttoMin + " Minuten aufgebraucht" +
-    (pausenMin > 0 ? " (davon " + pausenMin + " Min. Sicherheitspausen)" : "") + ".");
-  if (bruttoMin >= 55) {
+  if (r.abstand > sekunden) {
+    // Gleichmaessiges Tempo (02.10.2026): Statt nach wenigen Minuten
+    // aufgebraucht zu sein, verteilen sich die Suchen ueber die Stunde
+    // (content.js suchWarteMs). Eine Wartepause gibt es nur noch, wenn
+    // Preis-Checks oder Scans die Stunde trotzdem fuellen.
+    teile.push("Der Bot verteilt die " + proStunde + " Suchen gleichmäßig über die Stunde: rund alle " +
+      Math.round(r.abstand) + " Sekunden eine (Tempo „" + name + "“ allein wären " + sekunden.toLocaleString("de-DE") +
+      " Sek.). So ist die Stunde nicht nach wenigen Minuten verbraucht.");
+  } else {
+    teile.push("Bei Tempo „" + name + "“ (rund " + sekunden.toLocaleString("de-DE") + " Sek. je Suche) sind " +
+      proStunde + " Suchen nach etwa " + bruttoMin + " Minuten aufgebraucht" +
+      (pausenMin > 0 ? " (davon " + pausenMin + " Min. Sicherheitspausen)" : "") + ".");
+  }
+  if (r.abstand > sekunden || bruttoMin >= 55) {
     teile.push("Damit kann der Bot fast durchgehend arbeiten.");
   } else {
     teile.push("Danach wartet er bis zu " + (60 - bruttoMin) + " Minuten, bis die Stunde wieder Platz hat.");
@@ -3218,8 +3247,10 @@ function renderGrenzen(st) {
         Math.min(laufzeit, bruttoMin) + " Minuten, statt zu warten. Wer durchgehend suchen will, lässt das Feld Laufzeit leer.");
     }
   }
+  // 02.10.2026: Mit Pausen und Verteilung schafft eine Stunde weniger als
+  // proStunde - gerechnet wird mit dem, was wirklich hineinpasst.
   teile.push("Das Tagesbudget von " + proTag + " Suchen reicht für rund " +
-    Math.max(1, Math.round(proTag / Math.max(1, proStunde))) + " solcher Stunden.");
+    Math.max(1, Math.round(proTag / Math.max(1, Math.min(proStunde, 3600 / r.sekundenBrutto)))) + " solcher Stunden.");
   feld.textContent = teile.join(" ");
   feld.className = proStunde > 150 || proTag > 350 || getippt > STUNDE_HART ? "hint warn" : "hint";
 }
@@ -4668,10 +4699,11 @@ for (const feld of ["budget", "autoBudget"]) {
 // Welche Einstellungen der Autopilot sonst noch mitnimmt. Sie stehen im
 // Manuellen Modus (Schritt 5 und Start-Fenster) - ohne diese Zeile galten sie
 // im Auto-Modus unsichtbar.
-const TEMPO_TEXT = { safe: "Sicher", normal: "Normal", turbo: "Turbo (mehr Risiko)" };
+// "schonend" (02.10.2026): Profil "Konto-schonend", siehe applyStartProfile.
+const TEMPO_TEXT = { safe: "Sicher", normal: "Normal", turbo: "Turbo (mehr Risiko)", schonend: "Konto-schonend" };
 // "aus" seit 27.09.2026. Ohne den Eintrag stuende in der Uebersicht
 // faelschlich "Pausen ausgewogen", obwohl keine gemacht werden.
-const PAUSEN_TEXT = { off: "aus", short: "kurz", medium: "ausgewogen", long: "lang", fst: "wie FST" };
+const PAUSEN_TEXT = { off: "aus", short: "kurz", medium: "ausgewogen", long: "lang", fst: "wie FST", schonend: "konto-schonend" };
 const DANACH_TEXT = { transfer: "auf die Transferliste", club: "in den Verein", keep: "liegen lassen", list: "gleich verkaufen" };
 
 function renderAutoEinstellungen() {
@@ -5761,7 +5793,10 @@ async function rotationLauf() {
       // FST-Modus (Punkt 4c): Im Auto-Handel hat FST keine Sicherheitspausen
       // (useBreaks=false, scripts.js Z. 42257). Die Pause zwischen zwei Filtern
       // bleibt; innerhalb eines Filters wird ohne Pausen gesucht.
-      if (fstAn()) lauf.pausePreset = "off";
+      // 02.10.2026: Wer ausdruecklich "Konto-schonend" waehlt, behaelt die
+      // Pausen auch in der Rotation - sonst waere das Profil dort still
+      // wirkungslos. Fuer alle bisherigen Pausen-Stufen bleibt es bei "aus".
+      if (fstAn() && $("pausePreset").value !== "schonend") lauf.pausePreset = "off";
       const sperren = startPruefung([ziel], lauf).blockers;
       if (sperren.length) {
         rotationText = "Fertig: " + sperren[0];
@@ -8329,7 +8364,7 @@ function startPruefung(alleZiele, lauf) {
 // "Einstellungen im Ueberblick" im Start-Dialog (30.09.2026): kleine Chips wie
 // FSTs "Settings overview" (Name grau, Wert weiss und fett). Nur Anzeige - sie
 // lesen die Felder, die im Dialog darunter stehen, und aendern nichts.
-const PAUSEN_NAMEN = { short: "Kurz", medium: "Ausgewogen", long: "Lang", off: "Aus", fst: "Wie FST" };
+const PAUSEN_NAMEN = { short: "Kurz", medium: "Ausgewogen", long: "Lang", off: "Aus", fst: "Wie FST", schonend: "Schonend" };
 
 function startChips(anzahl) {
   const r = laufzeitRechnung(letzterStatus);
@@ -8405,9 +8440,11 @@ function startSafetyInfo() {
   // Verkaufspreis (Bildschirm 900, Bot 1.100). Deshalb steht hier keine
   // zweite mehr.
   const secondsPerSearch = laufzeitRechnung(letzterStatus).sekundenBrutto;
-  // Ist das Tempo schneller als das Stundenlimit (bei allen Profilen so), ist
-  // die Stunde vor Ablauf der Laufzeit voll. Die Schaetzung nennt deshalb nur
-  // die Suchen, die in DIESER Stunde noch hineinpassen.
+  // Ist das Tempo schneller als das Stundenlimit, ist die Stunde vor Ablauf
+  // der Laufzeit voll. Die Schaetzung nennt deshalb nur die Suchen, die in
+  // DIESER Stunde noch hineinpassen. 02.10.2026: Im strengen Modus verteilt
+  // der Bot die Suchen jetzt gleichmaessig (sekundenBrutto enthaelt den
+  // Abstand) - dort greift diese Klemme nicht mehr.
   // 27.09.2026: Der Bot stoppt dort nicht mehr, er wartet auf die naechste
   // freie Anfrage. Die Wanduhr-Zeit kann darum laenger werden als die
   // geschaetzten Minuten - die Zahl der Suchen bleibt richtig.
@@ -8425,7 +8462,12 @@ function applyStartProfile(profile) {
   const profiles = {
     safe: { speed: "safe", pause: "long", searches: 60, buys: 2 },
     balanced: { speed: "normal", pause: "medium", searches: 100, buys: 3 },
-    intense: { speed: "turbo", pause: "short", searches: 150, buys: 5 }
+    intense: { speed: "turbo", pause: "short", searches: 150, buys: 5 },
+    // "Konto-schonend" (02.10.2026) nach MagicBuyers Profil "prudent": 8-14 s
+    // je Suche, hoechstens 6 pro Minute, alle 12-18 Suchen eine Pause und
+    // hoechstens 90 Minuten Laufzeit. Gedacht fuer die Zeit nach einer
+    // Sperre. Den Modus (fstModus) fasst das Profil nicht an.
+    schonend: { speed: "schonend", pause: "schonend", searches: 60, buys: 2, maxMin: 90 }
   };
   const value = profiles[profile] || profiles.balanced;
   // Ein Schnellprofil ist eine bewusste Abweichung vom Standard - also Custom.
@@ -8436,6 +8478,18 @@ function applyStartProfile(profile) {
   $("pausePreset").value = value.pause;
   $("filterSearchLimit").value = String(value.searches);
   $("filterBuyLimit").value = String(value.buys);
+  // Hoechstens maxMin Minuten: Eine kuerzere eigene Laufzeit bleibt stehen,
+  // ein leeres Feld (= ohne Zeitlimit) oder eine laengere wird gekuerzt.
+  if (value.maxMin) {
+    const jetzt = Number($("timeLimitMin").value) || 0;
+    if (!(jetzt > 0) || jetzt > value.maxMin) {
+      setTuneMode("runtime", "custom");
+      $("timeLimitMin").value = String(value.maxMin);
+    }
+  }
+  // Programmatische Aenderungen loesen kein change-Ereignis aus - die
+  // Laufzeit-Zeile (Tempo, Pausen, Laufzeit) wird hier nachgezogen.
+  if (typeof renderLaufzeit === "function") renderLaufzeit(letzterStatus);
   for (const button of WURZEL.querySelectorAll("#sm-profile button")) button.classList.toggle("active", button.dataset.value === profile);
   saveSettings();
   startSafetyInfo();

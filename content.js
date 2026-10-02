@@ -1823,13 +1823,15 @@
       bidSniping: input.bidSniping === true,
       bidSeconds: [30, 60].includes(toInt(input.bidSeconds)) ? toInt(input.bidSeconds) : 60,
       maxBidsPerAuction: Math.min(10, Math.max(1, toInt(input.maxBidsPerAuction) || CONFIG.MAX_BIDS_PER_AUCTION)),
-      speedMode: ["safe", "normal", "turbo"].includes(input.speedMode) ? input.speedMode : "normal",
+      // "schonend" (02.10.2026): Profil "Konto-schonend", siehe searchDelay.
+      speedMode: ["safe", "normal", "turbo", "schonend"].includes(input.speedMode) ? input.speedMode : "normal",
       // "off" = keine Sicherheitspausen (27.09.2026, wie FSTs useBreaks in
       // scripts.js Z. 3263). Unbekannte Werte fallen weiter auf "medium"
       // zurueck - der Standard bleibt also "ausgewogen", nicht wie bei FST aus.
       // "fst" (01.10.2026): FSTs sichtbare Pausen-Zahlen. Nur im FST-Modus
       // gueltig, sonst faellt es wie jeder unbekannte Wert auf "medium".
-      pausePreset: ["off", "short", "medium", "long"].concat(fst ? ["fst"] : []).includes(input.pausePreset) ? input.pausePreset : "medium",
+      // "schonend" (02.10.2026) gilt in beiden Modi, siehe breakPlan.
+      pausePreset: ["off", "short", "medium", "long", "schonend"].concat(fst ? ["fst"] : []).includes(input.pausePreset) ? input.pausePreset : "medium",
       // FST-Modus: Beim Snipen hat FST keine Grenze je Filter. Leeres Feld =
       // keine Grenze; eine eingetragene Zahl gilt (mindestens 1, nach oben offen).
       filterSearchLimit: fst ? (toInt(input.filterSearchLimit) > 0 ? toInt(input.filterSearchLimit) : Number.MAX_SAFE_INTEGER)
@@ -4806,11 +4808,16 @@
     const obergrenze = Number(jitterMax) >= Number(target.maxPrice) ? Number(jitterMax) : Number(target.maxPrice);
     const pfad = searchPath(target.playerId, obergrenze, 0, run.cfg.bidSniping, target.rating, jitterMin, target.rarity);
     run.letzterSuchPfad = pfad; // fuer die Verkaufserkennung (gedaechtnisMerken)
+    // Beginn der echten Suche merken (02.10.2026): Ab hier zaehlt der Abstand
+    // fuer das gleichmaessige Tempo (suchWarteMs). Nach einer Wartepause am
+    // Stundenlimit wird neu gesetzt - die Wartezeit zaehlt nicht als Abstand.
     try {
+      run.letzteSucheAt = Date.now();
       return await api(pfad);
     } catch (e) {
       if (!(e instanceof HardStop)) throw e;
       if (!(await stundenPause(run, e.message))) throw e;
+      run.letzteSucheAt = Date.now();
       return await api(pfad);
     }
   }
@@ -6697,6 +6704,8 @@
   // Kehrseite: Das Stundenlimit ist statt nach rund 30 Minuten schon nach gut
   // 10 erreicht. Danach wartet der Bot bis zur naechsten Stunde, statt
   // aufzuhoeren (siehe die Wartepause am Stundenlimit).
+  // 02.10.2026: Im strengen Modus nicht mehr - dort verteilt suchWarteMs die
+  // Suchen gleichmaessig ueber die Stunde.
   //
   // FSTs eigene Einstufung des Risikos, aus seinem Hilfetext (Z. 55874):
   // Langsam = geringes, Normal = mittleres, Turbo = hohes Risiko fuer eine
@@ -6708,8 +6717,62 @@
     if (cfg.speedMode === "safe") return streuen(3600, 4990, 0.20, 900, 1800);
     // FST: hw(2520,3111) + 50 % Chance auf hw(120,420)
     if (cfg.speedMode === "turbo") return streuen(2520, 3111, 0.50, 120, 420);
+    // "Konto-schonend" (02.10.2026) nach MagicBuyers Profil "prudent": 8 bis
+    // 14 s je Suche, hoechstens 6 Suchen pro Minute (die 10-s-Untergrenze ab
+    // Suchbeginn steht in suchWarteMs). Gedacht fuer die Zeit nach einer
+    // Sperre. Im Mittel rund 10,6 s - popup.js tempoSekunden rechnet mit 10,7.
+    if (cfg.speedMode === "schonend") return streuen(8000, 12500, 0.30, 600, 1500);
     // FST: hw(3310,4010) + 50 % Chance auf hw(100,600)
     return streuen(3310, 4010, 0.50, 100, 600);
+  }
+
+  // Gleichmaessiges Tempo im strengen Modus (02.10.2026).
+  //
+  // Bisher war das Stundenlimit nach rund 10 Minuten Dauerfeuer verbraucht,
+  // danach kamen 45 Minuten Stille. Genau so eine Ballung sieht EA am
+  // ehesten - und das Konto wurde schon einmal gesperrt. Jetzt liegt zwischen
+  // zwei Lauf-Suchen mindestens 3600 s / Stundenlimit (bei 150 also 24 s),
+  // gemessen ab Beginn der letzten Suche. Die Grenze pro Stunde bleibt
+  // dieselbe, nur ohne Ballung - wegen Zufall und Pausen sind es im Mittel
+  // etwas weniger (in der Simulation rund 140 statt 150). Kostet keine
+  // Anfrage, der Bot wartet nur laenger.
+  //
+  // Der Zufall geht nur nach oben (0 bis 15 Prozent): Nach unten liefe der
+  // Lauf sonst selbst ins Stundenlimit. Der FST-Modus bleibt unveraendert
+  // (dort gibt es keine Stundengrenze), darum gibt die Funktion dort 0
+  // zurueck, bevor sie wuerfelt - die Zufallsfolge bleibt so dieselbe.
+  //
+  // popup.js laufzeitRechnung rechnet mit dem Mittel 1,075 - wer die
+  // Streuung aendert, muss es dort nachziehen.
+  const GLEICHMASS_STREUUNG = 0.15;
+  // Hoechstens 6 Suchen pro Minute bei "Konto-schonend" (MagicBuyer prudent).
+  const SCHONEND_MIN_ABSTAND_MS = 10000;
+
+  function gleichmaessigAbstandMs(limitStunde, fst) {
+    if (fst === true) return 0;
+    const limit = Number(limitStunde);
+    if (!(limit > 0) || !Number.isFinite(limit)) return 0;
+    const basis = Math.ceil(3600000 / limit);
+    return basis + randomBetween(0, Math.round(basis * GLEICHMASS_STREUUNG));
+  }
+
+  // Wie lange vor der naechsten Lauf-Suche gewartet wird. searchDelay gilt wie
+  // bisher ab Rundenende, die Untergrenze ab Beginn der letzten Suche. Was seit
+  // dem Suchbeginn schon vergangen ist (Kauf, Verschieben, Einstellen,
+  // Sicherheitspause), wird angerechnet - nach einer Pause wird also nicht
+  // noch einmal 24 s gewartet.
+  //
+  // Reihenfolge mit Absicht: erst searchDelay, dann hoechstens EIN weiterer
+  // Zufallswert. Im FST-Modus bleibt die Zufallsfolge so genau wie vorher.
+  function suchWarteMs(cfg, seitSuchbeginnMs, limitStunde, fst) {
+    const abRundenende = searchDelay(cfg);
+    let abSuchbeginn = gleichmaessigAbstandMs(limitStunde, fst);
+    if (cfg.speedMode === "schonend") abSuchbeginn = Math.max(abSuchbeginn, SCHONEND_MIN_ABSTAND_MS);
+    const seit = Number(seitSuchbeginnMs);
+    // Infinity = noch keine Suche in diesem Lauf: nichts nachholen. Negativ
+    // (Uhr zurueckgestellt): die volle Untergrenze, nie eine negative Wartezeit.
+    const fehlt = Number.isFinite(seit) ? abSuchbeginn - Math.max(0, seit) : 0;
+    return Math.max(abRundenende, fehlt);
   }
 
   // Die laengeren Ruhepausen - seit 25.09.2026 nach FSTs Standardwerten
@@ -6771,7 +6834,11 @@
         longMs: Math.max(3134, randomBetween(63000, 117000))
       };
     }
+    // "Konto-schonend" (02.10.2026, MagicBuyer prudent): alle 12 bis 18 Suchen
+    // 1 bis 2 Minuten. Die zweite, laengere Stufe darunter gilt auch hier,
+    // damit der Pausen-Faktor 1,425 in popup.js stimmt.
     const plan =
+      cfg.pausePreset === "schonend" ? { every: randomBetween(12, 18), ms: Math.max(3134, randomBetween(60000, 120000)) } :
       cfg.pausePreset === "short" ? { every: streuenAnzahl(45, 5), ms: streuen(45000) } :
       cfg.pausePreset === "long" ? { every: streuenAnzahl(30, 5), ms: streuen(180000) } :
       // FSTs Standard: alle 45 Suchen 90 Sekunden.
@@ -7189,7 +7256,21 @@
         run.nextPauseIn = nextBreak.every;
         if (isCurrent(token)) setMessage(runningMessage(cfg), "run");
       }
-      await wait(Math.max(searchDelay(cfg), STATE.pauseUntil - Date.now()), token);
+      // Gleichmaessiges Tempo (02.10.2026, siehe suchWarteMs): Im strengen
+      // Modus mindestens 3600 s / Stundenlimit ab Beginn der letzten Suche.
+      // Kauf, Verschieben, Einstellen und Sicherheitspausen werden
+      // angerechnet. Das wirksame Limit ist suchLimitStunde() - eigene Grenze,
+      // Tippfehler-Riegel und Sperr-Riegel (Standard 150, also 24 s).
+      const seitSuchbeginn = run.letzteSucheAt > 0 ? Date.now() - run.letzteSucheAt : Infinity;
+      const abstandMs = suchWarteMs(cfg, seitSuchbeginn, suchLimitStunde(), STATE.fstModus === true);
+      // Bei langer Wartezeit ein Hinweis, sonst sieht es wie ein Haenger aus
+      // (Muster wie kaufAbstand). Reine Anzeige, zieht keinen Zufallswert.
+      // Eine Warnung bleibt stehen - sie ist wichtiger.
+      const warteText = STATE.fstModus !== true && abstandMs >= 8000 && STATE.level === "run"
+        ? "Nächste Suche in " + Math.round(abstandMs / 1000) + " s – gleichmäßig über die Stunde verteilt." : "";
+      if (warteText) setMessage(warteText, "run");
+      await wait(Math.max(abstandMs, STATE.pauseUntil - Date.now()), token);
+      if (warteText && isCurrent(token) && STATE.message === warteText) setMessage(runningMessage(cfg), "run");
     }
 
     // Nur der aktuelle Loop darf "running" zuruecksetzen (sonst killt ein alter
