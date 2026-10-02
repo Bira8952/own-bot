@@ -8422,8 +8422,14 @@
     if (STATE.suchweg === "app") suchseiteFragen();
     // Toene (Optionen > Toene) - wirken sofort, auch ohne Neuladen.
     tonEinstellen(settings);
+    // Auto-Scan nur neu planen, wenn er gerade EINgeschaltet wird (oder noch
+    // keiner geplant ist). Vorher plante JEDES Speichern - jeder Tastendruck in
+    // einem Grenzfeld, jeder neue Kontostand bei "Budget: Auto" - einen Scan in
+    // 3 Sekunden: unnoetige EA-Anfragen (gefunden im MagicBuyer-Vergleich, 02.10.2026).
+    const autoVorher = STATE.autoFilters;
     STATE.autoFilters = Boolean(settings && settings.autoFilters);
-    scheduleAutoScan(STATE.autoFilters ? 3000 : CONFIG.AUTO_SCAN_INTERVAL_MS);
+    if (!STATE.autoFilters) scheduleAutoScan(CONFIG.AUTO_SCAN_INTERVAL_MS); // raeumt den Zeitgeber ab
+    else if (!autoVorher || !autoScanTimer) scheduleAutoScan(3000);
   }
 
   loadCooldown().catch(() => {});
