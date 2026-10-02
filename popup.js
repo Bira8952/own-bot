@@ -34,7 +34,8 @@ const $ = (id) => WURZEL.getElementById(id);
 const NUMBER_FIELDS = ["rating", "rarity", "maxPrice", "budget", "maxBuys", "discount", "minProfit", "timeLimitMin", "bidSeconds", "filterSearchLimit", "filterAnfrageLimit", "filterBuyLimit", "filterSpendLimit", "tonLautstaerke", "rotKaeufeProFilter", "rotSuchenProFilter", "rotPauseS", "grenzeSuchStunde", "grenzeSuchTag", "listFestpreis", "rotWertungMin", "rotWertungMax", "rotMinPreis", "preisStufen", "rotAnfrageProFilter"];
 // 27.09.2026: verkaufPreisLangeNutzen kommt dazu - damit der Bot nach 60
 // Minuten Laufzeit weiter einstellt (siehe Optionen > Verkaeufe).
-const CHECK_FIELDS = ["notify", "autoFilters", "smartProfit", "bidSniping", "stopIfTooBroad", "sofortKaufen", "nachKaufNeuSuchen", "gewinnBremse", "rotAbzUngeprueft", "rotAbzNurGesehen", "rotAbzUnterSchnitt", "rotAbzGewinn", "rotAbzUnterPreis", "rotAbzHeiss", "rotAbzRuhig", "rotAbzNeu", "rotAbzChem", "autoCheckOnStart", "appSuchweg", "appNurSuchseite", "tonKauf", "tonEnde", "verkaufWache", "autoAbraeumen", "verkaufPreisLangeNutzen", "nichtZugewiesenUnbegrenzt", "rotationModus", "deckelFst", "fstModus"];
+// 02.10.2026: warnungStopp ("Bei EA-Warnung sofort stoppen", Optionen > Grenzen).
+const CHECK_FIELDS = ["notify", "autoFilters", "smartProfit", "bidSniping", "stopIfTooBroad", "sofortKaufen", "nachKaufNeuSuchen", "gewinnBremse", "rotAbzUngeprueft", "rotAbzNurGesehen", "rotAbzUnterSchnitt", "rotAbzGewinn", "rotAbzUnterPreis", "rotAbzHeiss", "rotAbzRuhig", "rotAbzNeu", "rotAbzChem", "autoCheckOnStart", "appSuchweg", "appNurSuchseite", "tonKauf", "tonEnde", "verkaufWache", "autoAbraeumen", "verkaufPreisLangeNutzen", "nichtZugewiesenUnbegrenzt", "rotationModus", "deckelFst", "fstModus", "warnungStopp"];
 const AFTER_BUY_VALUES = ["transfer", "club", "keep", "list"];
 
 function afterBuyValue() {
@@ -107,6 +108,9 @@ const DEFAULTS = {
   // bekommen ihn ueber den Merker fstModusV1 (siehe loadSettings) - ein neuer
   // Standardwert erreicht sie sonst nie. Aus = der strenge Modus von frueher.
   fstModus: true,
+  // Bei EA-Warnung sofort stoppen (02.10.2026): ab Werk AUS. Ein Merker wie
+  // fstModusV1 ist nicht noetig - fehlt das Feld, ergibt {...DEFAULTS} false.
+  warnungStopp: false,
   // Versuche je Filter in der Rotation (FST: Transaktionen je Filter, 10).
   rotAnfrageProFilter: "10"
 };
@@ -8660,7 +8664,9 @@ let collections = {};
 // sie beim Laden die Liste ueberschreiben.
 // ---------------------------------------------------------------------------
 // fstModus (01.10.2026): globaler Schalter - er darf nicht in Sammlungen wandern.
-const PROFIL_AUS = ["rating", "rarity", "maxPrice", "rarity-wahl", "fstModus"];
+// warnungStopp (02.10.2026): ebenso ein globaler Sicherheitsschalter. Laedt
+// jemand eine alte Sammlung, darf der Haken nicht still mitwandern.
+const PROFIL_AUS = ["rating", "rarity", "maxPrice", "rarity-wahl", "fstModus", "warnungStopp"];
 
 function profilLesen() {
   const profil = {};

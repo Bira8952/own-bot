@@ -415,6 +415,14 @@
     20000: 240 // ACCOUNT_BANNED
   };
 
+  // Dringende EA-Warnungen (02.10.2026). Endet ein Lauf wegen eines dieser
+  // Codes, kommt der Warnton auch ohne den Haken "Ton am Lauf-Ende", und die
+  // Chrome-Meldung bleibt stehen, bis man sie wegklickt. Mit dem Haken "Bei
+  // EA-Warnung sofort stoppen" beenden sie im FST-Modus auch Kauf, Gebot und
+  // Verkaufs-Wache sofort. Warum: Am 22.09. kamen 426 und 461 direkt vor der
+  // Sperre - wer das nicht mitbekommt, startet ahnungslos neu.
+  const WARNUNG_CODES = new Set([401, 426, 458, 461, 465, 468, 474, 494, 512, 521, 20000, 20004]);
+
   // Kauf-Antworten, die bedeuten: Angebot war schon weg. Normal, kein Fehler.
   // 461 stand hier frueher falsch drin. Das ist PERMISSION_DENIED und gehoert
   // zu den harten Stopps: Sonst verbucht der Bot ein echtes Rechteproblem als
@@ -467,6 +475,9 @@
     // Einstellungen steht. fstEinst ist der Haken aus den Einstellungen; er
     // wird erst beim naechsten Start (oder im Leerlauf) uebernommen.
     fstEinst: false,
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026). Nur in
+    // applyAutomationSettings gesetzt, Standard AUS. Wirkt nur im FST-Modus.
+    warnungStopp: false,
     running: false,
     token: 0,
     cfg: null,
@@ -1252,9 +1263,13 @@
   }
 
   // Chrome-Benachrichtigung ueber background.js (abschaltbar in den Einstellungen).
-  function notify(message, ton) {
+  // dringend = true (02.10.2026): Die Meldung bleibt stehen, bis man sie
+  // wegklickt (background.js, requireInteraction).
+  function notify(message, ton, dringend) {
     try {
-      const pending = chrome.runtime.sendMessage({ type: "notify", title: "FC27 Own Bot", message, ton: ton === "kauf" || ton === "ende" ? ton : "" });
+      const nachricht = { type: "notify", title: "FC27 Own Bot", message, ton: ton === "kauf" || ton === "ende" ? ton : "" };
+      if (dringend === true) nachricht.dringend = true;
+      const pending = chrome.runtime.sendMessage(nachricht);
       if (pending && typeof pending.catch === "function") pending.catch(() => {});
     } catch (e) {}
   }
@@ -1304,8 +1319,9 @@
   }
 
   // Beim Start-Klick aufrufen: Dann gibt Chrome den Ton frei.
+  // Auch ohne Ton-Haken (02.10.2026): Der Warnton bei einer dringenden
+  // EA-Warnung kommt immer - und braucht dafuer die Freigabe vom Start-Klick.
   function tonVorbereiten() {
-    if (!TON.kauf && !TON.ende) return;
     try {
       const ctx = tonKontext();
       if (ctx && ctx.state === "suspended") {
@@ -1348,10 +1364,11 @@
 
   // art: "kauf" | "ende" | "warnung". probe = { lautstaerke } fuer die Hoerprobe.
   // "ende" und "warnung" haengen beide am Haken "Ton am Lauf-Ende".
-  function tonSpielen(art, probe) {
+  // immer = true (02.10.2026): dringende EA-Warnung, spielt auch ohne Haken.
+  function tonSpielen(art, probe, immer) {
     try {
       if (!TON_MUSTER[art]) return false;
-      if (!probe && !(art === "kauf" ? TON.kauf : TON.ende)) return false;
+      if (!probe && !immer && !(art === "kauf" ? TON.kauf : TON.ende)) return false;
       const jetzt = Date.now();
       const abstand = probe ? TON_PROBE_ABSTAND_MS : TON_ABSTAND_MS[art];
       if (jetzt - (TON.zuletzt[art] || 0) < abstand) return false;
@@ -2436,11 +2453,18 @@
       const mitCode = (c) => (/HTTP \d+/.test(HARD_STOP[c]) ? HARD_STOP[c] : HARD_STOP[c] + " (HTTP " + c + ")");
       // Der EA-Statuscode haengt am Fehler (Punkt 4b): Die Leiste erkennt daran,
       // dass ein Markt-Scan an EA gescheitert ist und beendet die Rotation.
-      const mitStatus = (text) => Object.assign(new HardStop(text), { code });
+      // eaWarnung (02.10.2026): dringende Warnung, siehe WARNUNG_CODES.
+      const mitStatus = (text) => Object.assign(new HardStop(text), { code }, WARNUNG_CODES.has(code) ? { eaWarnung: code } : {});
       if (lesen) {
         throw mitStatus(HARD_STOP[code] ? mitCode(code) : "Suche fehlgeschlagen, Code " + code + ".");
       }
       if (code === 473) throw mitStatus(mitCode(473));
+      // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): auch bei Kauf und
+      // Gebot sofort Schluss - und beim Verschieben/Einstellen direkt nach dem
+      // Kauf, das gehoert zum Kauf-Ablauf (executeBuy traegt den Kauf vorher
+      // ins Kauflog ein, siehe clubStop). Ohne Startsperre - sperreFuerCode
+      // kennt im FST-Modus keine. Ohne Haken wie bisher.
+      if (STATE.warnungStopp === true && WARNUNG_CODES.has(code)) throw mitStatus(mitCode(code));
       return res;
     }
     if (HARD_STOP[res.status]) {
@@ -2448,7 +2472,11 @@
       // haeufigste Fehler ueberhaupt. Deshalb wird der Start eine Weile
       // blockiert - nicht nur der laufende Betrieb gestoppt.
       sperreFuerCode(res.status);
-      throw new HardStop(HARD_STOP[res.status] + " (HTTP " + res.status + ")");
+      const fehler = new HardStop(HARD_STOP[res.status] + " (HTTP " + res.status + ")");
+      // Dringende Warnung (02.10.2026): Alarmton und stehende Meldung beim Stopp.
+      // Bewusst kein .code: scan.code steuert im strengen Modus die Rotation.
+      if (WARNUNG_CODES.has(Number(res.status))) fehler.eaWarnung = Number(res.status);
+      throw fehler;
     }
 
     // 429 steht seit 22.09.2026 in HARD_STOP (15 Min. Pause). Die kurze
@@ -4183,11 +4211,14 @@
       // (scripts.js Z. 59455-59473: nur Such- und Gebots-Anfragen stoppen).
       // Hier nur melden; die naechste Suche stoppt selbst, wenn EA wirklich
       // ein Problem hat. Dann geht es unten wie bei jedem anderen Fehler weiter.
-      if (HARD_STOP[code] && STATE.fstModus === true) {
+      // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): dann auch im
+      // FST-Modus anhalten wie im strengen Modus.
+      const warnHalt = STATE.fstModus === true && STATE.warnungStopp === true && WARNUNG_CODES.has(code);
+      if (HARD_STOP[code] && STATE.fstModus === true && !warnHalt) {
         const meldung = "Verkaufs-Wache: " + HARD_STOP[code] + " Der Lauf geht weiter.";
         pushEvent("warn", meldung);
       } else if (HARD_STOP[code]) {
-        VERKAUFS_WACHE.halt = { text: "Gestoppt: " + HARD_STOP[code], level: "error" };
+        VERKAUFS_WACHE.halt = { text: "Gestoppt: " + HARD_STOP[code], level: "error", eaWarnung: WARNUNG_CODES.has(code) ? code : 0 };
         return null;
       }
       // Antwortet die Seite gar nicht, hoert der Bot eine Weile auf zu fragen.
@@ -4237,15 +4268,16 @@
       }
       const code = toInt(e && e.status) || 0;
       // FST-Modus (Punkt 5): nur melden, der Lauf geht weiter. Ist die Liste
-      // wirklich voll, stoppt die Platz-Regel (platzProblem).
-      if (STATE.fstModus === true) {
+      // wirklich voll, stoppt die Platz-Regel (platzProblem). Ausnahme
+      // (02.10.2026): Haken "Bei EA-Warnung sofort stoppen" und ein Warn-Code.
+      if (STATE.fstModus === true && !(STATE.warnungStopp === true && WARNUNG_CODES.has(code))) {
         const meldung = "Verkaufs-Wache: Abräumen hat nicht geklappt – " + (HARD_STOP[code] || e.message) + " Der Lauf geht weiter.";
         warn(meldung);
         pushEvent("warn", meldung);
         return;
       }
       VERKAUFS_WACHE.halt = HARD_STOP[code]
-        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error" }
+        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error", eaWarnung: WARNUNG_CODES.has(code) ? code : 0 }
         : { text: "Gestoppt: Abräumen hat nicht geklappt – " + e.message, level: "warn" };
       return;
     }
@@ -4284,15 +4316,15 @@
         return;
       }
       const code = toInt(e && e.status) || 0;
-      // FST-Modus (Punkt 5): wie oben nur melden.
-      if (STATE.fstModus === true) {
+      // FST-Modus (Punkt 5): wie oben nur melden, mit derselben Ausnahme.
+      if (STATE.fstModus === true && !(STATE.warnungStopp === true && WARNUNG_CODES.has(code))) {
         const meldung = "Verkaufs-Wache: Nachprüfen nach dem Abräumen hat nicht geklappt – " + (HARD_STOP[code] || e.message) + " Der Lauf geht weiter.";
         warn(meldung);
         pushEvent("warn", meldung);
         return;
       }
       VERKAUFS_WACHE.halt = HARD_STOP[code]
-        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error" }
+        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error", eaWarnung: WARNUNG_CODES.has(code) ? code : 0 }
         : { text: "Gestoppt: Nachprüfen nach dem Abräumen hat nicht geklappt – " + e.message, level: "warn" };
       return;
     }
@@ -4475,10 +4507,14 @@
 
   // code: "filter" = nur dieser Filter ist fertig, die Rotation darf weiter.
   // "gesamt" = alles beenden. Ohne Angabe entscheidet der Level.
-  function stop(message, level, leise, code) {
+  // eaWarnung (02.10.2026): EA-Code, wenn der Lauf wegen einer dringenden
+  // Warnung endet (WARNUNG_CODES). Dann Warnton immer und stehende Meldung.
+  function stop(message, level, leise, code, eaWarnung) {
     if (STATE.running) log("Stopp:", message);
     if (STATE.run && STATE.run.token === STATE.token && !STATE.run.reason) STATE.run.reason = message;
     const wasRunning = STATE.running;
+    const dringend = wasRunning && WARNUNG_CODES.has(toInt(eaWarnung));
+    if (dringend && STATE.run && STATE.run.token === STATE.token) STATE.run.eaWarnung = toInt(eaWarnung);
     STATE.running = false;
     fstAbgleichen();
     STATE.token += 1;
@@ -4490,11 +4526,12 @@
     STATE.letzterStopp = { code: code || (level === "error" ? "gesamt" : "filter"), message, level, t: Date.now() };
     gedaechtnisSichern().catch(() => {}); // gesammelte Preise sichern
     if (STATE.letzterStopp.code === "gesamt") rotationBeenden(message);
-    if (wasRunning && (level === "done" || level === "error")) notify(message, "ende");
+    if (wasRunning && (level === "done" || level === "error")) notify(message, "ende", dringend);
     // Ton nur, wenn der Bot von selbst aufhoert. Stopp-Knopf ("idle") und
     // Not-Aus (leise) bleiben still - da weiss der Nutzer ja Bescheid.
     if (wasRunning && !leise) {
-      if (level === "error") tonSpielen("warnung");
+      if (dringend) tonSpielen("warnung", null, true);
+      else if (level === "error") tonSpielen("warnung");
       else if (level === "done" || level === "warn") tonSpielen("ende");
     }
   }
@@ -6866,7 +6903,13 @@
     // Erster Blick in die Transferliste - kostenlos aus dem Speicher der App.
     // Alte Verkaeufe werden dabei gemerkt, zaehlen aber nicht zu diesem Lauf.
     // Bewusst OHNE await: Der Lauf soll darauf nicht warten.
-    verkaeufePruefen(run, token, "start").catch(() => {});
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): Meldet schon dieser
+    // erste Blick eine EA-Warnung, endet der Lauf. Sonst wie bisher.
+    verkaeufePruefen(run, token, "start").then((halt) => {
+      if (halt && halt.eaWarnung && STATE.fstModus === true && STATE.warnungStopp === true && isCurrent(token)) {
+        stop(halt.text, halt.level, false, undefined, halt.eaWarnung);
+      }
+    }).catch(() => {});
 
     while (isCurrent(token)) {
       // 25.09.2026: Steht nach einer unklaren Antwort von EA eine Bremse, wird
@@ -6879,7 +6922,7 @@
         await settleViaWatchlist(run);
       } catch (e) {
         if (e instanceof HardStop) {
-          stop(e.message, "error");
+          stop(e.message, "error", false, undefined, e.eaWarnung);
           break;
         }
         warn("Beobachtungsliste: " + e.message);
@@ -7063,7 +7106,7 @@
         }
       } catch (e) {
         if (e instanceof HardStop) {
-          stop(e.message, "error");
+          stop(e.message, "error", false, undefined, e.eaWarnung);
           break;
         }
         // FST-Modus (Punkt 6): wie ein Netzfehler zaehlen, nicht als Suchfehler.
@@ -7091,7 +7134,7 @@
         }
         const haltT = await verkaeufePruefen(run, token, "takt");
         if (haltT) {
-          stop(haltT.text, haltT.level);
+          stop(haltT.text, haltT.level, false, undefined, haltT.eaWarnung);
           break;
         }
       }
@@ -7120,11 +7163,20 @@
         // Pause her und kostet keine Suchzeit; gelesen wird aus dem Speicher
         // der App, also ohne Anfrage an EA.
         const wache = verkaeufePruefen(run, token, "pause").catch(() => null);
+        // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): Eine EA-Warnung
+        // der Wache beendet den Lauf sofort, nicht erst am Ende der Pause.
+        let wacheGestoppt = false;
+        wache.then((h) => {
+          if (h && h.eaWarnung && STATE.fstModus === true && STATE.warnungStopp === true && isCurrent(token)) {
+            wacheGestoppt = true;
+            stop(h.text, h.level, false, undefined, h.eaWarnung);
+          }
+        }).catch(() => {});
         await wait(dauer, token);
         run.pauseBis = 0;
         const haltP = await wache;
         if (haltP) {
-          stop(haltP.text, haltP.level);
+          if (!wacheGestoppt) stop(haltP.text, haltP.level, false, undefined, haltP.eaWarnung);
           break;
         }
         if (!isCurrent(token)) break;
@@ -7156,7 +7208,13 @@
     // Noch offene Gebote zum Schluss klaeren: Ein Zuschlag, der erst nach dem
     // Stoppen sichtbar wird, soll trotzdem im Kauflog landen.
     const ungeklaert = () => (run.unclearBids ? run.unclearBids.size : 0);
-    if ((run.openBids.size || ungeklaert()) && extensionAlive()) {
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): Nach einem Stopp
+    // wegen einer EA-Warnung fragt der Bot nicht noch einmal bei EA nach -
+    // sofort heisst sofort. Im strengen Modus haelt die Startsperre diese
+    // Abfrage ohnehin zurueck (reserveUsage prueft cooldownBlock). Die
+    // Hinweise "Gebot(e) noch offen" darunter bleiben. Ohne Haken wie bisher.
+    const nachWarnungStill = run.fst === true && STATE.warnungStopp === true && Boolean(run.eaWarnung);
+    if ((run.openBids.size || ungeklaert()) && extensionAlive() && !nachWarnungStill) {
       WATCHLIST.lastAt = 0;
       try {
         await settleViaWatchlist(run, true);
@@ -8399,6 +8457,9 @@
     // Verkaufs-Wache: Standard an. Abraeumen nur, wenn ausdruecklich gewuenscht.
     STATE.verkaufWache = !(settings && settings.verkaufWache === false);
     STATE.autoAbraeumen = Boolean(settings && settings.autoAbraeumen === true);
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026, Optionen > Grenzen).
+    // Standard AUS (=== true): ohne Haken bleibt der FST-Modus wie bisher.
+    STATE.warnungStopp = Boolean(settings && settings.warnungStopp === true);
     // Weiterkaufen bei vollem "Nicht zugewiesen" (28.09.2026). Standard AUS -
     // das ist auch FSTs eigener Standard (scripts.js Z. 58493: die Grenze 4
     // gilt dort, solange unlimited_unassigned aus ist).
