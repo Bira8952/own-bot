@@ -2701,6 +2701,7 @@
     GEDAECHTNIS.puffer = new Map();
     GEDAECHTNIS.letzteSicherung = Date.now();
     if (!puffer.size) return Promise.resolve();
+    marktVerlaufSichern(puffer);
     return updateStorage("preisGedaechtnis", (current) => {
       const jetzt = Date.now();
       const alt = current && typeof current === "object" && current.karten && typeof current.karten === "object" ? current.karten : {};
@@ -2741,6 +2742,31 @@
       }
       GEDAECHTNIS.karten = Math.min(keys.length, GEDAECHTNIS_MAX_KARTEN);
       return { v: 1, at: jetzt, karten: neu };
+    });
+  }
+
+  // Preisverlauf fuer die Markt-Analyse (markt.js, 02.10.2026).
+  //
+  // Je Karte ein Messpunkt pro Sicherung, daraus erkennt markt.js Dips und
+  // steigende Nachfrage. Gespeichert wird NUR der Marktanker (Angebot stand
+  // beim Sehen schon >= 5 Minuten): Ein Lockangebot, das nach Sekunden wieder
+  // weg ist, wuerde sonst einen Dip vortaeuschen, der nie kaufbar war.
+  // Kostet keine EA-Anfrage - die Preise stammen aus den normalen Suchen.
+  function marktVerlaufSichern(puffer) {
+    const M = typeof FC27Markt === "object" ? FC27Markt : null;
+    if (!M) return;
+    const jetzt = Date.now();
+    const punkte = [];
+    for (const [key, e] of puffer) {
+      if (e && e.anker > 0) punkte.push([key, e.anker, e.n]);
+    }
+    if (!punkte.length) return;
+    updateStorage("marktVerlauf", (current) => {
+      const alle = current && typeof current === "object" && current.karten && typeof current.karten === "object" ? current.karten : {};
+      for (const [key, preis, n] of punkte) {
+        alle[key] = M.verlaufEintragen(alle[key], jetzt, preis, n);
+      }
+      return { v: 1, at: jetzt, karten: M.verlaufBegrenzen(alle) };
     });
   }
 
