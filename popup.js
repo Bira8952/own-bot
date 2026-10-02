@@ -7023,6 +7023,10 @@ function render(res) {
 // 02.10.2026: Assistent und Chancen haengen am Status (laeuft, Stapel,
 // Sperre). Beide zeichnen nur neu, wenn sich etwas geaendert hat.
 function renderAssistentUndChancen() {
+  // Am Wurzelelement: laeuft der Bot? Die einfache Ansicht blendet die leeren
+  // Lauf-Zahlen aus, solange nichts laeuft (popup-design.css).
+  const wurzel = WURZEL === document ? document.documentElement : WURZEL.querySelector(".blatt");
+  if (wurzel) wurzel.classList.toggle("laeuft", Boolean(letzterStatus && letzterStatus.running));
   renderAssistent();
   renderChancen();
   if ($("chancen-scan")) {

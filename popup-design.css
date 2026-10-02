@@ -5117,3 +5117,10 @@ select:focus {
 .chance[data-art="fallend"] { border-left-color: var(--red); }
 .chance[data-art="bestseller"] .chance-spark polyline { stroke: var(--accent); }
 .chance[data-art="fallend"] .chance-spark polyline { stroke: var(--red); }
+
+/* --- Einfach im Snipen-Reiter (02.10.2026) ---
+   Ohne Lauf sind die Lauf-Zahlen (0 / 0 / –) nur Rauschen. Die Wahl
+   "Ein Spieler / Live-Filter" zeigt Einfach nur, wenn die Live-Filter-Reihe
+   schon aktiv ist - sonst gibt es nur den einen Weg. Hinweise bleiben. */
+.einfach:not(.laeuft) .board .score { display: none; }
+.einfach .auto-modi:has(#auto-modus-rotation[aria-checked="false"]) { display: none; }
