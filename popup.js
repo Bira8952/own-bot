@@ -256,6 +256,8 @@ let marktVerlauf = {};
 let marktVerkaeufe = {}; // erkannte Verkaeufe aus content.js: { key: [[t, preis], ...] }
 let radarListe = "chancen"; // offene Rangliste im Radar
 let radarDaten = { bestseller: [], guenstig: [], steigend: [], fallend: [] };
+// Trefferquote der Dip-Signale im gespeicherten Verlauf (markt.js backtestAlle).
+let trefferStand = { gesamt: { signale: 0, treffer: 0, offen: 0, quote: 0, dauerMin: 0 }, jeKarte: {} };
 // Ein Satz je Rangliste (Radar).
 const RADAR_ERKLAERUNG = {
   chancen: "Unter ihrem üblichen Preis und vermutlich bald wieder teurer – mit Gewinn nach 5 % Gebühr.",
@@ -7772,6 +7774,7 @@ async function startRun(onlyTargets, lauf) {
         // Ohne diese Zeile waere das Feld ein toter Punkt: gespeichert,
         // aber nie beim Start dabei.
         listFestpreis: Number(t.listFestpreis) >= VERKAUF_MIN_PREIS ? Math.floor(Number(t.listFestpreis)) : 0,
+        chance: t.source === "chance",
         maxPrice: t.maxPrice, expiresAt: t.expiresAt || 0, salePrice: (t.source === "live" || t.source === "chance") && Number(t.salePrice) > 0 ? Number(t.salePrice) : marktwertFuer({ playerId: t.playerId, rating: t.rating, rarity: t.rarity }, history), salePriceAt: preisStandFuer(t),
         // Die gemessene Chemie mitgeben (27.09.2026). Ohne sie kauft der Motor
         // jede Chemie zu einem Preis, der nur fuer eine gilt. null heisst:
@@ -9904,7 +9907,8 @@ function chancenRechnen() {
     return;
   }
   chancenStand = MARKT.datenStand(marktVerlauf);
-  chancen = MARKT.rangliste(marktVerlauf, { jetzt: chancenAt }).slice(0, CHANCEN_MAX).map((c) => {
+  trefferStand = MARKT.backtestAlle(marktVerlauf, chancenAt);
+  chancen = MARKT.rangliste(marktVerlauf, { jetzt: chancenAt, quoten: trefferStand.jeKarte }).slice(0, CHANCEN_MAX).map((c) => {
     const k = karteAnreichern(c.key, c);
     const preisAt = k.verlauf.length ? k.verlauf[k.verlauf.length - 1][0] : chancenAt;
     // Auf die Preisleiter von EA abrunden - so kauft der Bot auch wirklich.
@@ -9969,7 +9973,8 @@ function radarAnsicht(c, liste) {
   if (liste === "chancen") {
     return {
       gross: "+" + fmt(c.gewinn), grossTitel: "Gewinn nach 5 % EA-Gebühr, wenn der Preis zum Ziel zurückkehrt", ton: "plus",
-      unter: [c.art === "dip" ? "Dip" : "steigt", c.alterMin > 0 ? "gesehen vor " + c.alterMin + " Min." : "gerade gesehen"],
+      unter: [c.art === "dip" ? "Dip" : "steigt", c.alterMin > 0 ? "gesehen vor " + c.alterMin + " Min." : "gerade gesehen",
+        c.quote ? "erholte sich " + c.quote.treffer + " von " + c.quote.signale + "×" : ""],
       felder: [["Kaufen bis", fmt(c.kaufBis)], ["Ziel", fmt(c.ziel)], ["Gewinn", Math.round(c.marge * 100) + " %"]],
       satz: c.grund + "."
     };
@@ -10079,7 +10084,7 @@ function renderChancen() {
   const aufListe = new Set(targets.map(targetKey));
   const laeuft = isRunning();
   const verkauft = verkaeufeLetzteStunde();
-  const key = JSON.stringify([radarListe, eintraege.map((c) => [c.key, c.kaufBis, c.ziel, c.alterMin, c.name, c.aktuell, c.verkaeufe, c.gesehenAt]),
+  const key = JSON.stringify([radarListe, trefferStand.gesamt, eintraege.map((c) => [c.key, c.kaufBis, c.ziel, c.alterMin, c.name, c.aktuell, c.verkaeufe, c.gesehenAt, c.quote]),
     [...aufListe], laeuft, chancenStand, verkauft, Boolean(images)]);
   if (key === chancenKey) return;
   chancenKey = key;
@@ -10097,7 +10102,11 @@ function renderChancen() {
     zahl.hidden = !anzahl;
     b.replaceChildren(b.dataset.label, zahl);
   }
-  $("radar-erklaerung").textContent = RADAR_ERKLAERUNG[radarListe] || "";
+  const g = trefferStand.gesamt;
+  $("radar-erklaerung").textContent = (RADAR_ERKLAERUNG[radarListe] || "") + (radarListe === "chancen" && g.signale >= 3
+    ? " Trefferquote bisher: " + Math.round(g.quote * 100) + " % (" + g.treffer + " von " + g.signale + " Dips erholt" +
+      (g.dauerMin ? ", meist nach " + g.dauerMin + " Min." : "") + ")."
+    : "");
   liste.replaceChildren(...eintraege.map((c) => chanceZeile(c, radarListe, aufListe.has(c.key), laeuft)));
   $("chancen-stand").textContent = chancenStand.karten
     ? (chancenStand.karten === 1 ? "1 Karte" : fmt(chancenStand.karten) + " Karten") + " · " + fmt(chancenStand.reif) + " mit Verlauf · " +

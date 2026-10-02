@@ -1731,6 +1731,10 @@
       // Zahl wuerde nur tot im Speicher liegen und still nichts tun - darum
       // gilt sie gleich als "aus".
       target.listFestpreis = festJeFilter >= CONFIG.LIST_MIN_PRICE && festJeFilter <= 15000000 ? festJeFilter : 0;
+      // Chance aus dem Radar (02.10.2026): Ihr Verkaufspreis (salePrice) ist
+      // das Ziel nach der Erholung - er geht beim Einstellen vor einem frischen
+      // Preis-Check, der nur den gefallenen Preis von jetzt kennt.
+      target.chance = item && item.chance === true;
       if (!targets.some((t) => t.key === target.key)) targets.push(target);
     }
 
@@ -5383,6 +5387,14 @@
     const festFilter = toInt(target && target.listFestpreis);
     if (festFilter >= CONFIG.LIST_MIN_PRICE) {
       return { preis: festFilter, quelle: "festpreis-filter", alterMs: 0, eaMin: 0, eaMax: 0 };
+    }
+    // Chance (02.10.2026): Gekauft wurde im Dip, verkauft wird zum Ziel. Ein
+    // Preis-Check von vorhin zeigt nur den gefallenen Preis - damit waere der
+    // ganze Gewinn der Chance weg. Darum hier das mitgebrachte Ziel zuerst,
+    // solange es frisch ist. Der Verlustschutz in gleichEinstellen bleibt.
+    const chanceAt = toInt(target && target.salePriceAt);
+    if (target && target.chance === true && toInt(target.salePrice) > 0 && chanceAt > 0 && Date.now() - chanceAt <= CONFIG.LIST_PRICE_MAX_AGE_MS) {
+      return { preis: toInt(target.salePrice), quelle: "chance-ziel", alterMs: Date.now() - chanceAt, eaMin: 0, eaMax: 0 };
     }
     // Der globale Festpreis steht danach und veraltet auch nie - wie bei FST.
     const fest = toInt(STATE.listFestpreis);

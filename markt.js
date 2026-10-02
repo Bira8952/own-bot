@@ -165,10 +165,84 @@
       const b = bewerte(signale(verlauf), o);
       if (!b) continue;
       const alterMin = o.jetzt > 0 ? Math.max(0, Math.round((o.jetzt - letzter) / 60000)) : 0;
+      // Eigene Vergangenheit der Karte (backtestAlle): Hat sie sich nach
+      // frueheren Dips erholt, rueckt sie nach oben, sonst nach unten.
+      // Ab 2 frueheren Signalen; (Treffer+1)/(Signale+2) ist ohne Daten 50 %.
+      const q = o.quoten && o.quoten[key];
+      if (q && q.signale >= 2) {
+        b.quote = { signale: q.signale, treffer: q.treffer };
+        b.score = Math.round(b.score * 2 * ((q.treffer + 1) / (q.signale + 2)));
+      }
       treffer.push(Object.assign({ key, alterMin }, b));
     }
     treffer.sort((a, b) => b.score - a.score);
     return treffer;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trefferquote (02.10.2026): Wie oft hat sich ein Dip-Signal ausgezahlt?
+  //
+  // Fuer jeden Punkt im gespeicherten Verlauf wird so getan, als waere er
+  // "jetzt": Haette die Rangliste dort eine Dip-Chance gemeldet? Wenn ja,
+  // zaehlt sie als Treffer, wenn der Preis danach innerhalb von 2 Stunden das
+  // Ziel erreicht hat. Ein Signal, dessen 2 Stunden noch laufen, ist "offen"
+  // und zaehlt nicht. Ein laufender Dip zaehlt nur einmal.
+  // ---------------------------------------------------------------------------
+  const ERHOL_MS = 2 * 60 * 60 * 1000;
+
+  function backtest(verlauf, jetzt, opts) {
+    const v = Array.isArray(verlauf) ? verlauf : [];
+    const ergebnis = { signale: 0, treffer: 0, offen: 0, dauern: [] };
+    let i = MIN_PUNKTE - 1;
+    while (i < v.length) {
+      const b = bewerte(signale(v.slice(0, i + 1)), opts);
+      if (!b || b.art !== "dip") {
+        i += 1;
+        continue;
+      }
+      const start = v[i][0];
+      let erholt = -1;
+      for (let j = i + 1; j < v.length && v[j][0] - start <= ERHOL_MS; j++) {
+        if (v[j][1] >= b.ziel) {
+          erholt = j;
+          break;
+        }
+      }
+      if (erholt >= 0) {
+        ergebnis.signale += 1;
+        ergebnis.treffer += 1;
+        ergebnis.dauern.push(Math.round((v[erholt][0] - start) / 60000));
+        i = erholt + 1;
+        continue;
+      }
+      const fensterEnde = start + ERHOL_MS;
+      if (fensterEnde > (jetzt || 0)) {
+        ergebnis.offen += 1;
+        break; // alles danach liegt im selben, noch offenen Fenster
+      }
+      ergebnis.signale += 1;
+      // Weiter erst nach dem Fenster - sonst zaehlt derselbe Dip mehrfach.
+      while (i < v.length && v[i][0] <= fensterEnde) i += 1;
+    }
+    return ergebnis;
+  }
+
+  function backtestAlle(alle, jetzt, opts) {
+    const jeKarte = {};
+    const gesamt = { signale: 0, treffer: 0, offen: 0, quote: 0, dauerMin: 0 };
+    const dauern = [];
+    for (const key of Object.keys(alle || {})) {
+      const r = backtest(alle[key], jetzt, opts);
+      if (!r.signale && !r.offen) continue;
+      jeKarte[key] = { signale: r.signale, treffer: r.treffer, offen: r.offen };
+      gesamt.signale += r.signale;
+      gesamt.treffer += r.treffer;
+      gesamt.offen += r.offen;
+      dauern.push(...r.dauern);
+    }
+    gesamt.quote = gesamt.signale ? gesamt.treffer / gesamt.signale : 0;
+    gesamt.dauerMin = dauern.length ? Math.round(median(dauern)) : 0;
+    return { gesamt, jeKarte };
   }
 
   // "204935:85:3" -> { playerId: 204935, rating: 85, rarity: "3" }. Muss zu
@@ -374,7 +448,8 @@
   const api = {
     EA_STEUER, SLOT_MS, MAX_ALTER_MS, MAX_PUNKTE, MIN_PUNKTE, MIN_SPANNE_MS, MAX_KARTEN, STANDARD, FRISCH_MS,
     verlaufEintragen, verlaufBegrenzen, median, gewinn, signale, bewerte, rangliste, keyTeilen, datenStand, sparkPunkte,
-    ABLAUF_PUFFER_MS, BEOBACHTET_MAX, RADAR_FRISCH_MS, verkaeufeAbgleichen, verkaeufeEintragen, radarKarte, snipePlan, radar
+    ABLAUF_PUFFER_MS, BEOBACHTET_MAX, RADAR_FRISCH_MS, verkaeufeAbgleichen, verkaeufeEintragen, radarKarte, snipePlan, radar,
+    ERHOL_MS, backtest, backtestAlle
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.FC27Markt = api;
