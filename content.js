@@ -6166,6 +6166,13 @@
     // weiter auf jede Chemie geboten, obwohl der Preis fuer eine bestimmte
     // gemessen wurde. Genau das Loch, das isMatch beim Sofortkauf schliesst.
     if (!cfg.bidSniping || !isMatch(auction, target.playerId, target.rating, target.rarity, target.chem)) return false;
+    // Nie auf eigene Auktionen bieten und nie gegen sich selbst, wenn EA uns
+    // schon als Hoechstbietenden fuehrt (02.10.2026) - etwa nach einem
+    // Handgebot oder einem Gebot aus einem frueheren Lauf. Die openBids-
+    // Pruefung unten kennt nur Gebote DIESES Laufs. Vorbild MagicBuyer
+    // (tradeOwner, fremde Gebote nie anfassen). Spart Anfragen.
+    if (auction.tradeOwner === true) return false;
+    if (String(auction.bidState || "").toLowerCase() === "highest") return false;
     const left = secondsLeft(auction);
     if (!(left > 0) || left > cfg.bidSeconds) return false;
 
@@ -6431,7 +6438,9 @@
     STAPEL.weg = str(raw && raw.weg, 16);
     // EAs eigene Antwort auf "ist die Transferliste voll?" (27.09.2026).
     // Nur echtes true oder false uebernehmen - alles andere heisst "EA hat
-    // nichts gesagt", und dann gilt weiter die eigene Zaehlung.
+    // nichts gesagt", und dann gilt weiter die eigene Zaehlung. Seit
+    // 02.10.2026 schickt sniffer.js true/false nur bei geladener
+    // Stapelgroesse (getPileSize > 0), sonst null.
     STAPEL.vollTransfer = raw && typeof raw.vollTransfer === "boolean" ? raw.vollTransfer : null;
     // Kein stiller Verlust: gibt der Speicher der App nichts her, gilt EAs
     // eigene Zahl aus usermassinfo weiter - und "weg" sagt, woher sie kommt.
@@ -6861,6 +6870,13 @@
   function kaufPruefung(auction, target, run, token, gesuchtUm) {
     const cfg = run.cfg;
     if (!isCurrent(token)) return "ende";
+    // Das eigene Angebot nie zurueckkaufen (02.10.2026), etwa eine eigene
+    // "Gleich verkaufen"-Karte mit Festpreis oder Chance-Ziel unter dem
+    // Zielpreis. EA wuerde ablehnen (vermutlich mit einem harten Code), und
+    // die Anfrage zaehlte trotzdem. tradeOwner steht in EAs Suchantwort und
+    // im App-Weg (sniffer.js appAuktion), Vorbild MagicBuyer analyzeResults.
+    // Kostet nichts: Es geht keine Anfrage raus, also auch keine Pause.
+    if (auction && auction.tradeOwner === true) return "weiter";
     // Alte Trefferliste (25.09.2026): Nach Kauf, Verschieben und Pause ist das
     // dritte Angebot dieser Suche ueber eine Viertelminute alt. Was so lange
     // offen stand, ist meistens schon weg - die Anfrage zaehlt aber trotzdem
@@ -7094,6 +7110,16 @@
         // Kommt nach dem ersten Kauf die Pause, soll das beste Angebot schon weg sein.
         const hits = zuWeitJetzt ? [] : auctions.filter((a) => isTarget(a, target)).sort((a, b) => bin(a) - bin(b));
         if (auctions.length > 0 && hits.length === 0) logMismatch(auctions, target);
+        // Kein stiller Verlust (02.10.2026): Einmal je Lauf sagen, dass ein
+        // eigenes Angebot unter den Treffern lag und uebersprungen wird
+        // (kaufPruefung). Sonst wundert man sich, warum der Bot ein billiges
+        // Angebot liegen laesst.
+        if (!run.eigeneGemeldet && hits.some((a) => a.tradeOwner === true)) {
+          run.eigeneGemeldet = true;
+          const text = "Eigenes Angebot übersprungen (" + playerLabel(target) + "): Der Bot kauft nie eigene Karten zurück.";
+          log(text);
+          pushEvent("filter", text);
+        }
         // Gesehene Angebote fuer den Hinweis "kein Angebot bis ..." zaehlt
         // search() - dort ist bekannt, wonach EA gefiltert hat.
 
@@ -7327,6 +7353,16 @@
     if (STATE.running) return { ok: false, error: "Läuft bereits. Erst stoppen." };
     if (STATE.check.running) return { ok: false, error: "Preis-Check läuft noch. Gleich nochmal starten." };
     if (STATE.marketScan.running) return { ok: false, error: "EA-Live-Scan läuft noch. Gleich nochmal starten." };
+    // Kein Start waehrend einer Verkaufs-Aktion (02.10.2026). verkaufSperre
+    // sperrte bisher nur die Gegenrichtung (kein Verkauf waehrend eines
+    // Laufs) - so konnten Einstellen/Abraeumen und die Suchen des Laufs als
+    // zwei Anfrage-Stroeme gleichzeitig laufen (Komplettpruefung-23-09 Fund
+    // 23, MagicBuyer verweigert den Start genauso). "lesen" ist ausgenommen:
+    // transferlisteLesen ohne "frisch" liest nur den Speicher der App und
+    // fragt EA nie. "pruefen" (Verkaufs-Wache) sperrt bewusst mit - sie
+    // laeuft beim Laufstart ohne await und kann nach einem Stopp noch
+    // frische Lese- oder Abraeum-Anfragen offen haben.
+    if (VERKAUF.laeuft && VERKAUF.art !== "lesen") return { ok: false, error: "Eine Verkaufs-Aktion läuft noch. Gleich nochmal starten." };
     if (!SESSION.sid) {
       return { ok: false, error: "Noch nicht mit der Web App verbunden. Öffne dort einmal den Transfermarkt und starte dann erneut." };
     }

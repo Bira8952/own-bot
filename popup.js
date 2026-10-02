@@ -4373,6 +4373,10 @@ function startSperrGrund(st) {
   if (st.running) return "Der Bot läuft gerade. Erst stoppen.";
   if (st.check && st.check.running) return "Ein Preis-Check läuft gerade.";
   if (st.marketScan && st.marketScan.running) return "Der Markt-Scan läuft gerade.";
+  // Dieselbe Regel wie in content.js start() (02.10.2026): keine zwei
+  // Anfrage-Stroeme gleichzeitig. Nur "lesen" (Speicher der App, keine
+  // EA-Anfrage) sperrt nicht.
+  if (st.verkauf && st.verkauf.laeuft && st.verkauf.art !== "lesen") return "Eine Verkaufs-Aktion läuft noch. Gleich nochmal.";
   return "";
 }
 

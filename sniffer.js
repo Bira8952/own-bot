@@ -11,7 +11,7 @@
   // aeltere Fassung laeuft. Mit einem Boolean waere die neue Fassung hier
   // sofort wieder ausgestiegen und die alte haette ohne die neuen Funktionen
   // weitergemacht - genau so ist die Schnittstellen-Diagnose ins Leere gelaufen.
-  const SNIFFER_VERSION = 21; // 5: Verkaufen, 6: Usage Sharing, 7: Suchweg "app", 8: Stapel, 9: Einstellen nach dem Kauf, 10: Suchseite, 11: Muenzstand, 12: Kartenart aus der Suchmaske, 13: Auswahllisten der Suchmaske (24.09.2026), 14: Muenzstand aus {type, amount}, Abraeumen ueber removeSold, echte Fehlertexte (25.09.2026), 15: Seitenzaehler in einer Rechnung, Marktsuche am Namen erkannt, aus der Maske nur noch die Sortierung (25.09.2026), 16: Beobachtungsliste aufraeumen, Kontouebersicht mitlesen, "Nicht zugewiesen" ueber FSTs Weg (25.09.2026), 17: EA-Preisspanne aus dem Speicher, Transferliste als veraltet melden, Festpreis beim Einstellen (27.09.2026), 18: Chemie (playStyle) der eigenen Karten in der Transferliste (28.09.2026), 19: Abraeumen - gezielt FSTs Weg (_clearSold) auf Anforderung, Ergebnis "blind" (28.09.2026), 20: "Nicht zugewiesen" leeren und zuruecksetzen (28.09.2026), 21: mehrere Kartenarten aus EAs Suchmaske als Kommaliste (28.09.2026)
+  const SNIFFER_VERSION = 22; // 5: Verkaufen, 6: Usage Sharing, 7: Suchweg "app", 8: Stapel, 9: Einstellen nach dem Kauf, 10: Suchseite, 11: Muenzstand, 12: Kartenart aus der Suchmaske, 13: Auswahllisten der Suchmaske (24.09.2026), 14: Muenzstand aus {type, amount}, Abraeumen ueber removeSold, echte Fehlertexte (25.09.2026), 15: Seitenzaehler in einer Rechnung, Marktsuche am Namen erkannt, aus der Maske nur noch die Sortierung (25.09.2026), 16: Beobachtungsliste aufraeumen, Kontouebersicht mitlesen, "Nicht zugewiesen" ueber FSTs Weg (25.09.2026), 17: EA-Preisspanne aus dem Speicher, Transferliste als veraltet melden, Festpreis beim Einstellen (27.09.2026), 18: Chemie (playStyle) der eigenen Karten in der Transferliste (28.09.2026), 19: Abraeumen - gezielt FSTs Weg (_clearSold) auf Anforderung, Ergebnis "blind" (28.09.2026), 20: "Nicht zugewiesen" leeren und zuruecksetzen (28.09.2026), 21: mehrere Kartenarten aus EAs Suchmaske als Kommaliste (28.09.2026), 22: Transferliste voll nur mit geladener Stapelgroesse, tradeOwner im App-Weg (02.10.2026)
   const previous = Number(window.__fc27OwnBotSnifferLoaded);
   if (previous >= SNIFFER_VERSION) return;
   // Eine aeltere Fassung hat XMLHttpRequest und fetch bereits umgebogen. Ihre
@@ -1018,6 +1018,9 @@
       expires: Number(a.expires) || 0,
       tradeState: String(a.tradeState || ""),
       bidState: String(a.bidState || ""),
+      // Eigenes Angebot (02.10.2026): Feld wie in EAs Suchantwort und bei
+      // MagicBuyer. content.js kauft und bietet darauf nie.
+      tradeOwner: a.tradeOwner === true,
       itemData: {
         id: item.id == null ? "" : String(item.id),
         assetId: Number(lies(() => item.databaseId)) || (Number(item.definitionId) % 16777216) || 0,
@@ -1224,10 +1227,21 @@
     //
     // Kein stiller Verlust: Fehlt isPileFull oder ItemPile, bleibt der Wert
     // null. Im Bot gilt dann weiter die eigene Zaehlung, genau wie bisher.
+    // Seit 02.10.2026 ebenso, solange die Stapelgroesse noch nicht geladen
+    // ist (getPileSize 0 oder fehlt) - siehe unten.
     const vollFrage = (stapelName) => {
       if (!repo || typeof repo.isPileFull !== "function") return null;
       const stapel = lies(() => window.ItemPile[stapelName]);
       if (stapel === undefined || stapel === null) return null;
+      // Stapelgroesse zuerst (02.10.2026): EAs isPileFull meldet "voll",
+      // solange die Groesse des Stapels noch nicht geladen ist (Fund aus
+      // MagicBuyer, core/market.js). Sonst lehnte der Bot direkt nach dem
+      // Laden der Web App den Start ab oder stoppte den Lauf mit
+      // "Transferliste voll (3)". null heisst: Es gilt die eigene Zaehlung.
+      // Ohne getPileSize ist nicht feststellbar, ob die Groesse schon da ist -
+      // dann ebenfalls null. Liest nur den Speicher der App, keine Anfrage.
+      const groesse = Number(lies(() => (typeof repo.getPileSize === "function" ? repo.getPileSize(stapel) : 0)));
+      if (!(groesse > 0)) return null;
       const wert = lies(() => repo.isPileFull(stapel));
       return typeof wert === "boolean" ? wert : null;
     };

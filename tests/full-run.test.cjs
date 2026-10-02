@@ -250,3 +250,33 @@ test('der Verbrauch wird mitgezaehlt', async () => {
   assert.ok(status.usage.buysDay >= 1, 'Kaufaktionen gezaehlt');
   assert.equal(status.usage.cardLimitDay, 20);
 });
+
+test('ein eigenes Angebot wird nie gekauft', async () => {
+  // 02.10.2026: tradeOwner aus EAs Suchantwort. Ohne Pruefung ginge eine
+  // Kaufanfrage auf die eigene Karte raus - EA lehnt ab, gezaehlt wird sie
+  // trotzdem.
+  const l = labor();
+  await warte(50);
+  l.ea.angebote = [ANGEBOT({ tradeOwner: true })];
+  const { start, status } = await laufen(l);
+  assert.equal(start.ok, true, 'Start abgelehnt: ' + (start.error || ''));
+  assert.equal(status.stats.bought, 0);
+  assert.equal(status.stats.errors, 0);
+  assert.deepEqual(l.ea.gekauft, []);
+  assert.equal(l.ea.anfragen.filter((a) => /\/trade\/\d+\/bid$/.test(a.url)).length, 0, 'keine Kaufanfrage');
+  assert.ok(l.ea.anfragen.some((a) => a.url.includes('/transfermarket?')), 'gesucht wurde');
+  const hinweise = status.recentEvents.filter((e) => /Eigenes Angebot/.test(e.text));
+  assert.equal(hinweise.length, 1, 'einmal je Lauf sagen, warum nichts gekauft wird');
+});
+
+test('neben dem eigenen Angebot wird das fremde gekauft', async () => {
+  // Das eigene ist das billigste - uebersprungen wird nur dieses, das
+  // naechste der Liste geht wie gewohnt durch.
+  const l = labor();
+  await warte(50);
+  l.ea.angebote = [ANGEBOT({ tradeId: 5001, buyNowPrice: 800, tradeOwner: true }), ANGEBOT({ tradeId: 5002, buyNowPrice: 900 })];
+  const { status } = await laufen(l);
+  assert.equal(status.stats.bought, 1, 'Meldung: ' + status.message);
+  assert.deepEqual(l.ea.gekauft, [{ tradeId: 5002, preis: 900 }]);
+  assert.equal(l.ea.anfragen.filter((a) => /\/trade\/5001\/bid$/.test(a.url)).length, 0, 'auf das eigene ging nichts raus');
+});
