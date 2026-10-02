@@ -87,3 +87,40 @@ test('verlaufBegrenzen behaelt die frischesten Karten', () => {
   const k = M.verlaufBegrenzen(alle, 2);
   assert.deepEqual(Object.keys(k).sort(), ['b', 'c']);
 });
+
+test('keyTeilen passt zu priceKey', () => {
+  assert.deepEqual(M.keyTeilen('204935:85'), { playerId: 204935, rating: 85, rarity: '' });
+  assert.deepEqual(M.keyTeilen('204935:85:3'), { playerId: 204935, rating: 85, rarity: '3' });
+  assert.deepEqual(M.keyTeilen('204935:0:12,70'), { playerId: 204935, rating: 0, rarity: '12,70' });
+  assert.equal(M.keyTeilen('kaputt'), null);
+});
+
+test('Rangliste nimmt mit jetzt nur frische Karten', () => {
+  const start = 1_000_000_000_000;
+  const v = verlauf([10000, 10100, 9900, 10000, 10050, 9950, 10000, 8800, 8900], start);
+  const letzter = v[v.length - 1][0];
+  assert.equal(M.rangliste({ a: v }, { jetzt: letzter + 5 * MIN }).length, 1);
+  assert.equal(M.rangliste({ a: v }, { jetzt: letzter + 5 * MIN })[0].alterMin, 5);
+  assert.equal(M.rangliste({ a: v }, { jetzt: letzter + 31 * MIN }).length, 0, 'ein Dip von vor 31 Minuten ist vorbei');
+});
+
+test('datenStand zaehlt beobachtete und reife Karten', () => {
+  const reif = verlauf([1000, 1000, 1000, 1000, 1000, 1000, 1000]);
+  const halb = verlauf([1000, 1000, 1000]);
+  const d = M.datenStand({ reif, halb });
+  assert.equal(d.karten, 2);
+  assert.equal(d.reif, 1);
+  assert.equal(d.fortschritt, 1);
+  const nurHalb = M.datenStand({ halb });
+  assert.ok(nurHalb.fortschritt > 0 && nurHalb.fortschritt < 1);
+  assert.deepEqual(M.datenStand({}), { karten: 0, reif: 0, fortschritt: 0 });
+});
+
+test('sparkPunkte: billig unten, teuer oben, innerhalb der Flaeche', () => {
+  const p = M.sparkPunkte([[0, 100, 0], [10, 200, 0]], 100, 30).split(' ').map((xy) => xy.split(',').map(Number));
+  assert.equal(p[0][0], 0);
+  assert.equal(p[1][0], 100);
+  assert.ok(p[0][1] > p[1][1], 'der teurere Punkt liegt hoeher (kleineres y)');
+  for (const [, y] of p) assert.ok(y >= 0 && y <= 30);
+  assert.equal(M.sparkPunkte([[0, 1, 0]], 100, 30), '');
+});

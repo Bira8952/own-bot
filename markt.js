@@ -63,6 +63,11 @@
     return neu;
   }
 
+  // 10000 -> "10.000" (fest deutsch, unabhaengig von der Browser-Sprache).
+  function zahl(n) {
+    return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  }
+
   function median(zahlen) {
     const s = zahlen.filter((z) => Number.isFinite(z)).sort((a, b) => a - b);
     if (!s.length) return 0;
@@ -123,7 +128,7 @@
     let grund = "";
     if (s.dip >= o.minDip && s.dip <= o.maxDip) {
       art = "dip";
-      grund = "Preis " + Math.round(s.dip * 100) + " % unter dem Normalpreis (Median " + s.median + ")";
+      grund = "Gerade " + Math.round(s.dip * 100) + " % unter dem üblichen Preis von " + zahl(s.median);
       // Faellt der Preis gerade noch weiter, ist der Boden vermutlich nicht erreicht.
       if (s.faellt) {
         art = null;
@@ -133,7 +138,7 @@
     } else if (s.dip < o.minDip && s.trend > 0.04) {
       // Preis steigt, aber der Zielpreis (Median) liegt noch klar darueber.
       art = "nachfrage";
-      grund = "Preis steigt (+" + Math.round(s.trend * 100) + " %), Normalpreis " + s.median;
+      grund = "Preis zieht an (+" + Math.round(s.trend * 100) + " %), üblich sind " + zahl(s.median);
     }
     if (!art) return null;
 
@@ -143,20 +148,86 @@
     return { art, score, kauf: s.aktuell, ziel, gewinn: g, marge, grund, punkte: s.punkte, spanneMin: s.spanneMin };
   }
 
+  // So alt darf der letzte Messpunkt hoechstens sein, damit eine Karte als
+  // Chance gilt. Ein Dip von vor zwei Stunden ist laengst vorbei.
+  const FRISCH_MS = 30 * 60 * 1000;
+
   // Rangliste ueber alle Karten. `alle` = { key: verlauf }.
+  // opts.jetzt (ms) schaltet die Frische-Pruefung ein; ohne jetzt zaehlt alles.
   function rangliste(alle, opts) {
+    const o = opts || {};
+    const frischMs = o.frischMs > 0 ? o.frischMs : FRISCH_MS;
     const treffer = [];
     for (const key of Object.keys(alle || {})) {
-      const b = bewerte(signale(alle[key]), opts);
-      if (b) treffer.push(Object.assign({ key }, b));
+      const verlauf = alle[key];
+      const letzter = Array.isArray(verlauf) && verlauf.length ? verlauf[verlauf.length - 1][0] : 0;
+      if (o.jetzt > 0 && o.jetzt - letzter > frischMs) continue;
+      const b = bewerte(signale(verlauf), o);
+      if (!b) continue;
+      const alterMin = o.jetzt > 0 ? Math.max(0, Math.round((o.jetzt - letzter) / 60000)) : 0;
+      treffer.push(Object.assign({ key, alterMin }, b));
     }
     treffer.sort((a, b) => b.score - a.score);
     return treffer;
   }
 
+  // "204935:85:3" -> { playerId: 204935, rating: 85, rarity: "3" }. Muss zu
+  // priceKey() in content.js passen. Die Kartenart kann fehlen ("") oder eine
+  // Liste sein ("12,70").
+  function keyTeilen(key) {
+    const teile = String(key || "").split(":");
+    const playerId = Math.floor(Number(teile[0]));
+    if (!(playerId > 0)) return null;
+    const rating = Math.floor(Number(teile[1])) || 0;
+    const rarity = teile.length > 2 && /^\d+(,\d+)*$/.test(teile[2]) ? teile[2] : "";
+    return { playerId, rating, rarity };
+  }
+
+  // Wie weit ist das Lernen? Fuer den leeren Zustand der Chancen-Ansicht:
+  // karten = beobachtet, reif = genug Verlauf fuer eine Bewertung,
+  // fortschritt = die am weitesten gelernte Karte (0..1).
+  function datenStand(alle) {
+    const keys = Object.keys(alle || {});
+    let reif = 0;
+    let fortschritt = 0;
+    for (const key of keys) {
+      const v = alle[key];
+      if (!Array.isArray(v) || !v.length) continue;
+      if (signale(v)) {
+        reif += 1;
+        fortschritt = 1;
+        continue;
+      }
+      const spanne = v[v.length - 1][0] - v[0][0];
+      const anteil = Math.min(v.length / MIN_PUNKTE, spanne / MIN_SPANNE_MS, 1);
+      if (anteil > fortschritt) fortschritt = anteil;
+    }
+    return { karten: keys.length, reif, fortschritt };
+  }
+
+  // Punkte fuer eine kleine Verlaufslinie (SVG polyline), Breite x Hoehe.
+  // Billig = unten, teuer = oben.
+  function sparkPunkte(verlauf, breite, hoehe) {
+    if (!Array.isArray(verlauf) || verlauf.length < 2) return "";
+    const b = breite > 0 ? breite : 100;
+    const h = hoehe > 0 ? hoehe : 30;
+    const t0 = verlauf[0][0];
+    const t1 = verlauf[verlauf.length - 1][0];
+    const preise = verlauf.map((p) => p[1]);
+    const lo = Math.min(...preise);
+    const hi = Math.max(...preise);
+    return verlauf
+      .map((p) => {
+        const x = t1 === t0 ? b / 2 : ((p[0] - t0) / (t1 - t0)) * b;
+        const y = hi === lo ? h / 2 : h - 2 - ((p[1] - lo) / (hi - lo)) * (h - 4);
+        return x.toFixed(1) + "," + y.toFixed(1);
+      })
+      .join(" ");
+  }
+
   const api = {
-    EA_STEUER, SLOT_MS, MAX_ALTER_MS, MAX_PUNKTE, MIN_PUNKTE, MIN_SPANNE_MS, MAX_KARTEN, STANDARD,
-    verlaufEintragen, verlaufBegrenzen, median, gewinn, signale, bewerte, rangliste
+    EA_STEUER, SLOT_MS, MAX_ALTER_MS, MAX_PUNKTE, MIN_PUNKTE, MIN_SPANNE_MS, MAX_KARTEN, STANDARD, FRISCH_MS,
+    verlaufEintragen, verlaufBegrenzen, median, gewinn, signale, bewerte, rangliste, keyTeilen, datenStand, sparkPunkte
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.FC27Markt = api;

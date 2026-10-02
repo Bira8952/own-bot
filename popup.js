@@ -244,6 +244,27 @@ let selectedFilterKey = null;
 let modalFilterRow = null;
 let modalSaleMode = "normal";
 let modalProfitMode = "auto";
+// 02.10.2026: Chancen, Assistent, Einfach/Profi, Einfuehrung (siehe unten,
+// Abschnitt "Chancen, Assistent ..."). Hier oben, damit render() sie auch
+// beim allerersten Aufruf schon kennt.
+const MARKT = typeof FC27Markt === "object" && FC27Markt ? FC27Markt : null;
+const ASSISTENT = typeof FC27Assistent === "object" && FC27Assistent ? FC27Assistent : null;
+const CHANCEN_MAX = 10;
+const CHANCEN_NEU_MS = 60000; // die Rangliste haengt an der Uhr (Frische) - einmal pro Minute reicht
+const SVG_NS = "http://www.w3.org/2000/svg";
+let marktVerlauf = {};
+let chancen = [];
+let chancenAt = 0;
+let chancenStand = { karten: 0, reif: 0, fortschritt: 0 };
+let chancenKey = "";
+let assistentKey = "";
+let spielerIndex = null;
+let spielerIndexQuelle = null;
+let ansicht = "profi";
+// Knoepfe des Assistenten, die nur einen Reiter oeffnen.
+const ASSISTENT_REITER = { chancen: "tab-chancen", snipen: "tab-snipe", kaeufe: "tab-buys" };
+let tourSeite = 1;
+const TOUR_SEITEN = 3;
 
 // ---------------------------------------------------------------------------
 // Formatierung
@@ -2828,8 +2849,10 @@ let lastTargetsKey = "";
 
 // Live-Filter gelten 15 Minuten. Danach ueberspringt der Start sie, und unter
 // "Filter" laesst sich derselbe Filter erneuern.
+// Chancen (02.10.2026) laufen ab wie Live-Filter: Ein Dip von vor einer
+// Stunde ist vorbei. Sie gelten FC27Markt.FRISCH_MS ab ihrer letzten Messung.
 function liveAlt(t) {
-  return Boolean(t) && t.source === "live" && t.expiresAt > 0 && t.expiresAt <= Date.now();
+  return Boolean(t) && (t.source === "live" || t.source === "chance") && t.expiresAt > 0 && t.expiresAt <= Date.now();
 }
 
 // Im FST-Modus gibt es keinen Ablauf (Punkt 3): FST misst jeden Filter bei jedem
@@ -2857,7 +2880,12 @@ function sanitizeTargets(list) {
       // Laden ueberleben - Number("12,70") waere NaN und machte daraus still
       // "jede Art". Das ist dieselbe Falle wie in der Sicherung vom 25.09.
       playerId: Number(t.playerId), playerName: t.playerName, rating: Number(t.rating) || 0, rarity: rarityWert(t.rarity), maxPrice: Number(t.maxPrice),
-      source: t.source === "live" ? "live" : "manual",
+      // "chance" (02.10.2026): aus der Chancen-Ansicht. Bringt wie ein
+      // Live-Filter ihren Verkaufspreis mit (salePrice = Ziel, preisAt =
+      // Zeitpunkt der Messung) - der Verkauf rechnet mit der Erholung des
+      // Preises, nicht mit dem gefallenen Preis von jetzt.
+      source: t.source === "live" ? "live" : t.source === "chance" ? "chance" : "manual",
+      preisAt: t.source === "chance" && Number(t.preisAt) > 0 ? Number(t.preisAt) : 0,
       filterId: typeof t.filterId === "string" ? t.filterId : "",
       salePrice: Number(t.salePrice) || 0,
       // Fester Verkaufspreis je Zeile (28.09.2026, wie FSTs listBuyNowPrice
@@ -3221,7 +3249,7 @@ function renderTargets(force, notiz) {
   const abgelaufen = targets.map(liveAbgelaufen);
   // FST-Modus (Punkt 3): kein Ablauf, aber der alte Preis wird gelb gezeigt.
   const preisAelter = fstAn() ? targets.map(liveAlt) : targets.map(() => false);
-  const preisAlt = targets.map((t) => t.source !== "live" && priceAgeFor(t) > PRICE_FRESH_MS);
+  const preisAlt = targets.map((t) => t.source !== "live" && t.source !== "chance" && priceAgeFor(t) > PRICE_FRESH_MS);
   const nachpruefen = $("autoCheckOnStart").checked;
   const sperre = aktuelleSperre();
   const key = JSON.stringify([targets, [...progress.values()].map((p) => [p.key, p.bought, p.missed]), running,
@@ -3255,7 +3283,9 @@ function renderTargets(force, notiz) {
         const flag = document.createElement("small");
         flag.className = "target-flag";
         flag.textContent = "abgelaufen";
-        row.title = "Der Live-Filter ist älter als 15 Minuten. Der Lauf überspringt ihn. Unter „Filter“ kannst du ihn erneuern.";
+        row.title = t.source === "chance"
+          ? "Die Chance ist älter als 30 Minuten. Der Lauf überspringt sie. Unter „Chancen“ siehst du, ob sie noch gilt."
+          : "Der Live-Filter ist älter als 15 Minuten. Der Lauf überspringt ihn. Unter „Filter“ kannst du ihn erneuern.";
         name.append(flag);
       } else if (preisAelter[index]) {
         const flag = document.createElement("small");
@@ -3271,6 +3301,14 @@ function renderTargets(force, notiz) {
         row.title = stand.keinGewinn
           ? "Nach 5 % EA-Gebühr bringt der Verkauf nur " + fmt(stand.saleNet) + " Coins. So startet der Bot nicht."
           : "Vorschlag: " + (stand.vorschlag > 0 ? fmt(stand.vorschlag) : "kein sinnvoller Zielpreis") + ". Der Gewinn wird kleiner.";
+        name.append(flag);
+      } else if (t.source === "chance" && t.salePrice > 0) {
+        // Woher die Zeile kommt und womit der Verkauf rechnet (02.10.2026).
+        const flag = document.createElement("small");
+        flag.className = "target-flag chance-flag";
+        flag.textContent = "Chance · Ziel " + fmt(t.salePrice);
+        row.title = "Aus „Chancen“: kaufen bis " + fmt(t.maxPrice) + ", verkaufen um " + fmt(t.salePrice) +
+          ", wenn sich der Preis erholt. Gilt bis " + hhmm(t.expiresAt) + ".";
         name.append(flag);
       }
       const price = document.createElement("span");
@@ -3349,8 +3387,11 @@ function renderTargets(force, notiz) {
   }
   const weg = targets.filter((t, i) => abgelaufen[i]);
   if (weg.length) {
+    const nurChancen = weg.every((t) => t.source === "chance");
     warnungen.push("Abgelaufen: " + weg.map((t) => t.playerName).join(", ") +
-      ". Der Lauf überspringt " + (weg.length === 1 ? "diesen Live-Filter" : "diese Live-Filter") + " – unter „Filter“ kannst du erneuern.");
+      (nurChancen
+        ? ". Der Lauf überspringt " + (weg.length === 1 ? "diese Chance" : "diese Chancen") + " – unter „Chancen“ siehst du, was noch gilt."
+        : ". Der Lauf überspringt " + (weg.length === 1 ? "diesen Live-Filter" : "diese Live-Filter") + " – unter „Filter“ kannst du erneuern."));
   }
   if (preisAelter.some(Boolean)) {
     warnungen.push("Der Preis ist älter als 15 Minuten: " + targets.filter((t, i) => preisAelter[i]).map((t) => t.playerName).join(", ") + ". Der Lauf geht trotzdem los.");
@@ -6846,6 +6887,7 @@ function render(res) {
     $("market-scan-msg").textContent = "Öffne die EA-Web-App, lade sie mit F5 neu und öffne einmal den Transfermarkt.";
     $("usage-hint").textContent = "";
     $("filter-empty").textContent = "Noch keine Live-Marktdaten, weil der Bot nicht mit der EA-Web-App verbunden ist.";
+    renderAssistentUndChancen();
     return;
   }
 
@@ -6962,6 +7004,19 @@ function render(res) {
   $("s-bids-box").title = outcome.length
     ? "Abgegebene Gebote: " + outcome.join(", ") + "."
     : "Abgegebene Gebote; ein Gebot ist noch kein gewonnener Spieler.";
+  renderAssistentUndChancen();
+}
+
+// 02.10.2026: Assistent und Chancen haengen am Status (laeuft, Stapel,
+// Sperre). Beide zeichnen nur neu, wenn sich etwas geaendert hat.
+function renderAssistentUndChancen() {
+  renderAssistent();
+  renderChancen();
+  if ($("chancen-scan")) {
+    const scan = (letzterStatus && letzterStatus.marketScan) || {};
+    $("chancen-scan").disabled = !letzterStatus || Boolean(scan.running) || $("scan-market").disabled;
+    $("chancen-scan").textContent = scan.running ? "Markt wird gescannt …" : "Markt scannen";
+  }
 }
 
 async function poll() {
@@ -6992,6 +7047,8 @@ function preisStandFuer(target) {
     const ende = Number(target.expiresAt) || 0;
     return ende > 0 ? ende - 15 * 60000 : Date.now();
   }
+  // Chance (02.10.2026): Zeitpunkt der letzten Messung im Preisverlauf.
+  if (target && target.source === "chance" && Number(target.salePrice) > 0) return Number(target.preisAt) || 0;
   const entries = history[targetKey(target)];
   const entry = Array.isArray(entries) ? entries[entries.length - 1] : null;
   return entry && entry.t ? Number(entry.t) : 0;
@@ -7025,7 +7082,9 @@ function priceAgeFor(target) {
 function gewinnStand(target) {
   const maxPrice = Number(target && target.maxPrice) || 0;
   if (!(maxPrice > 0)) return null;
-  if (target.source === "live" && target.salePrice > 0) {
+  // Chancen (02.10.2026) wie Live-Filter: Ihr Verkaufspreis ist das Ziel aus
+  // dem eigenen Preisverlauf, nicht der gefallene Marktpreis von jetzt.
+  if ((target.source === "live" || target.source === "chance") && target.salePrice > 0) {
     const saleNet = Math.floor(target.salePrice * (1 - SALE_FEE));
     return { alt: false, saleNet, vorschlag: 0, keinGewinn: maxPrice >= saleNet, ueberVorschlag: false };
   }
@@ -7077,8 +7136,11 @@ function gewinnSperre(list) {
 // Frische Preise kosten keine EA-Anfrage, werden aber trotzdem auf Gewinn
 // geprueft (gewinnSperre ganz am Ende).
 // Ziele mit altem Preis. Live-Filter wurden beim Laden bereits frisch geprueft.
+// Chancen (02.10.2026) auch nicht: Der normale Preis-Check rechnet mit dem
+// Verkauf zum Marktpreis von jetzt und wuerde jeden Dip-Kauf als "zu teuer"
+// ablehnen. Eine Chance laeuft stattdessen nach 30 Minuten ab (liveAlt).
 function altePreise(list) {
-  return list.filter((t) => t.source !== "live" && priceAgeFor(t) > PRICE_FRESH_MS);
+  return list.filter((t) => t.source !== "live" && t.source !== "chance" && priceAgeFor(t) > PRICE_FRESH_MS);
 }
 
 // Satz, wenn der Start zu viele alte Preise nachpruefen muesste. Sonst "".
@@ -7525,6 +7587,7 @@ function selectTab(tab, moveFocus) {
   // Ein Klick darauf heisst: weg vom Dialog, hin zum Reiter.
   if (!$("start-modal-wrap").hidden) closeStartModal();
   if (!$("filter-modal-wrap").hidden) closeFilterModal();
+  if ($("tour-wrap") && !$("tour-wrap").hidden) tourSchliessen();
   const gewechselt = tab.getAttribute("aria-selected") !== "true";
   for (const other of tabList) {
     const active = other === tab;
@@ -7538,16 +7601,20 @@ function selectTab(tab, moveFocus) {
   if (gewechselt) nachObenScrollen();
   // Kaeufe: Transferliste aus dem Speicher der Web App lesen - kostet nichts.
   if (gewechselt && tab.id === "tab-buys") verkaufLesen(false);
+  if (gewechselt) renderAssistent(); // seine Knoepfe haengen am offenen Reiter
 }
 
-for (const [index, tab] of tabList.entries()) {
+for (const tab of tabList) {
   tab.addEventListener("click", () => selectTab(tab, false));
   tab.addEventListener("keydown", (event) => {
+    // Einfach (02.10.2026): versteckte Reiter gibt es fuer die Tastatur nicht.
+    const sichtbar = tabList.filter((t) => !(ansicht === "einfach" && t.hasAttribute("data-profi")));
+    const index = Math.max(0, sichtbar.indexOf(tab));
     const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
     let next = null;
-    if (step) next = tabList[(index + step + tabList.length) % tabList.length];
-    else if (event.key === "Home") next = tabList[0];
-    else if (event.key === "End") next = tabList[tabList.length - 1];
+    if (step) next = sichtbar[(index + step + sichtbar.length) % sichtbar.length];
+    else if (event.key === "Home") next = sichtbar[0];
+    else if (event.key === "End") next = sichtbar[sichtbar.length - 1];
     if (!next) return;
     event.preventDefault();
     selectTab(next, true);
@@ -7559,6 +7626,7 @@ for (const [index, tab] of tabList.entries()) {
 // weiterwusste, musste den passenden Absatz selbst suchen.
 const HILFE_ANKER = {
   "tab-snipe": "hilfe-snipe",
+  "tab-chancen": "hilfe-chancen",
   "tab-filters": "hilfe-filters",
   "tab-buys": "hilfe-buys",
   "tab-settings": "hilfe-settings",
@@ -7656,8 +7724,11 @@ async function startRun(onlyTargets, lauf) {
   if (expired.length) {
     list = list.filter((target) => !liveAbgelaufen(target));
     if (!list.length) {
-      notice = (expired.length === 1 ? "Der Live-Filter für " + expired[0].playerName + " ist" : "Alle Live-Filter sind") +
-        " abgelaufen. Erneuere " + (expired.length === 1 ? "ihn" : "sie") + " unter „Filter“.";
+      notice = expired.every((t) => t.source === "chance")
+        ? (expired.length === 1 ? "Die Chance für " + expired[0].playerName + " ist" : "Alle Chancen sind") +
+          " abgelaufen. Unter „Chancen“ siehst du, was noch gilt."
+        : (expired.length === 1 ? "Der Live-Filter für " + expired[0].playerName + " ist" : "Alle Live-Filter sind") +
+          " abgelaufen. Erneuere " + (expired.length === 1 ? "ihn" : "sie") + " unter „Filter“.";
       render(lastRes || { ok: false, error: notice });
       return false;
     }
@@ -7690,7 +7761,7 @@ async function startRun(onlyTargets, lauf) {
         // Ohne diese Zeile waere das Feld ein toter Punkt: gespeichert,
         // aber nie beim Start dabei.
         listFestpreis: Number(t.listFestpreis) >= VERKAUF_MIN_PREIS ? Math.floor(Number(t.listFestpreis)) : 0,
-        maxPrice: t.maxPrice, expiresAt: t.expiresAt || 0, salePrice: t.source === "live" && Number(t.salePrice) > 0 ? Number(t.salePrice) : marktwertFuer({ playerId: t.playerId, rating: t.rating, rarity: t.rarity }, history), salePriceAt: preisStandFuer(t),
+        maxPrice: t.maxPrice, expiresAt: t.expiresAt || 0, salePrice: (t.source === "live" || t.source === "chance") && Number(t.salePrice) > 0 ? Number(t.salePrice) : marktwertFuer({ playerId: t.playerId, rating: t.rating, rarity: t.rarity }, history), salePriceAt: preisStandFuer(t),
         // Die gemessene Chemie mitgeben (27.09.2026). Ohne sie kauft der Motor
         // jede Chemie zu einem Preis, der nur fuer eine gilt. null heisst:
         // Messung war gemischt, keine Sperre.
@@ -8014,15 +8085,18 @@ function startPruefung(alleZiele, lauf) {
   }
   if (!list.length) {
     blockers.push(weg.length
-      ? "Alle Live-Filter in der Liste sind abgelaufen. Erneuere sie unter „Filter“."
+      ? (weg.every((t) => t.source === "chance")
+        ? "Alle Chancen in der Liste sind abgelaufen. Unter „Chancen“ siehst du, was noch gilt."
+        : "Alle Live-Filter in der Liste sind abgelaufen. Erneuere sie unter „Filter“.")
       : "Kein Spieler gewählt.");
   } else if (weg.length) {
-    warnings.push("Abgelaufen, wird übersprungen: " + weg.map((t) => t.playerName).join(", ") + ". Unter „Filter“ kannst du erneuern.");
+    warnings.push("Abgelaufen, wird übersprungen: " + weg.map((t) => t.playerName).join(", ") +
+      (weg.every((t) => t.source === "chance") ? ". Unter „Chancen“ siehst du, was noch gilt." : ". Unter „Filter“ kannst du erneuern."));
   }
   // FST-Modus (Punkt 3): Kein Ablauf, keine Sperre - nur eine gelbe Warnung.
   // (Die Pruefung steht hier ausgeschrieben: dieser Block laeuft in Tests ohne
   // die Hilfsfunktion liveAlt.)
-  const preisAelter = fst ? alleZiele.filter((t) => t && t.source === "live" && t.expiresAt > 0 && t.expiresAt <= Date.now()) : [];
+  const preisAelter = fst ? alleZiele.filter((t) => t && (t.source === "live" || t.source === "chance") && t.expiresAt > 0 && t.expiresAt <= Date.now()) : [];
   if (preisAelter.length) {
     warnings.push("Der Preis ist älter als 15 Minuten: " + preisAelter.map((t) => t.playerName).join(", ") + ". Der Lauf geht trotzdem los.");
   }
@@ -8126,11 +8200,12 @@ function startPruefung(alleZiele, lauf) {
   }
   // Nur Live-Filter in der Liste: Der Lauf endet, wenn der letzte abläuft.
   // Live gesehen: Laufzeit 30 Min., der Filter galt aber nur noch 11.
-  const liveEnden = list.map((t) => (t.source === "live" ? Number(t.expiresAt) || 0 : 0));
+  const liveEnden = list.map((t) => (t.source === "live" || t.source === "chance" ? Number(t.expiresAt) || 0 : 0));
   if (!fst && list.length && liveEnden.every((ende) => ende > 0)) {
     const restMin = Math.max(1, Math.ceil((Math.max(...liveEnden) - Date.now()) / 60000));
     if (restMin < (timeLimit || 300)) {
-      hinweise.push((list.length === 1 ? "Der Live-Filter gilt" : "Die Live-Filter gelten") + " nur noch " + restMin +
+      const nurChancen = list.every((t) => t.source === "chance");
+      hinweise.push((list.length === 1 ? (nurChancen ? "Die Chance gilt" : "Der Live-Filter gilt") : (nurChancen ? "Die Chancen gelten" : "Die Live-Filter gelten")) + " nur noch " + restMin +
         " Min. – dann endet der Lauf, auch wenn die Laufzeit länger ist.");
     }
   }
@@ -9767,14 +9842,440 @@ $("speicher-aufraeumen").addEventListener("click", async () => {
 
 speicherStand();
 
+// ---------------------------------------------------------------------------
+// Chancen, Assistent, Einfach/Profi und Einfuehrung (02.10.2026)
+//
+// Chancen: Rangliste aus dem eigenen Preisverlauf (markt.js). Die Ansicht
+// fragt EA nie - der Verlauf fuellt sich aus den Suchen, die der Bot sowieso
+// macht (content.js marktVerlaufSichern).
+// Assistent: assistent.js uebersetzt den Zustand in einen Satz und hoechstens
+// zwei Knoepfe. Hier wird nur eingesammelt, gezeichnet und geklickt.
+// Einfach: blendet alles mit data-profi aus (CSS), sonst aendert sich nichts.
+// ---------------------------------------------------------------------------
+// Die Zustaende dazu stehen oben bei den anderen (MARKT, chancen, ansicht ...).
+
+function spielerFuer(id) {
+  if (spielerIndexQuelle !== players) {
+    spielerIndex = new Map(players.map((p) => [p.id, p]));
+    spielerIndexQuelle = players;
+  }
+  return spielerIndex.get(id) || null;
+}
+
+async function loadMarkt() {
+  let roh = null;
+  try {
+    roh = (await chrome.storage.local.get("marktVerlauf")).marktVerlauf;
+  } catch (e) {
+    roh = null;
+  }
+  marktVerlauf = roh && typeof roh === "object" && roh.karten && typeof roh.karten === "object" ? roh.karten : {};
+  chancenRechnen();
+  renderChancen();
+  renderAssistent();
+}
+
+function chancenRechnen() {
+  chancenAt = Date.now();
+  if (!MARKT) {
+    chancen = [];
+    return;
+  }
+  chancenStand = MARKT.datenStand(marktVerlauf);
+  chancen = MARKT.rangliste(marktVerlauf, { jetzt: chancenAt }).slice(0, CHANCEN_MAX).map((c) => {
+    const teile = MARKT.keyTeilen(c.key) || { playerId: 0, rating: 0, rarity: "" };
+    const spieler = spielerFuer(teile.playerId);
+    const verlauf = Array.isArray(marktVerlauf[c.key]) ? marktVerlauf[c.key] : [];
+    const preisAt = verlauf.length ? verlauf[verlauf.length - 1][0] : chancenAt;
+    // Auf die Preisleiter von EA abrunden - so kauft der Bot auch wirklich.
+    const kaufBis = roundDownToStep(c.kauf);
+    const gewinn = MARKT.gewinn(kaufBis, c.ziel);
+    return Object.assign({}, c, teile, {
+      name: spieler ? spieler.name : "Spieler " + teile.playerId,
+      kaufBis,
+      gewinn,
+      marge: kaufBis > 0 ? gewinn / kaufBis : 0,
+      preisAt,
+      bis: preisAt + MARKT.FRISCH_MS,
+      verlauf
+    });
+  });
+}
+
+function chancenFrisch() {
+  if (Date.now() - chancenAt > CHANCEN_NEU_MS) chancenRechnen();
+  return chancen;
+}
+
+function chanceSpark(c) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "chance-spark");
+  svg.setAttribute("viewBox", "0 0 100 28");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const linie = document.createElementNS(SVG_NS, "polyline");
+  linie.setAttribute("points", MARKT ? MARKT.sparkPunkte(c.verlauf, 100, 28) : "");
+  svg.append(linie);
+  return svg;
+}
+
+function chanceZeile(c, schonDrauf, laeuft) {
+  const row = document.createElement("article");
+  row.className = "chance";
+  row.dataset.art = c.art;
+
+  const kopf = document.createElement("div");
+  kopf.className = "chance-kopf";
+  const name = document.createElement("div");
+  name.className = "chance-name";
+  const titel = document.createElement("b");
+  titel.textContent = c.name;
+  const unter = document.createElement("small");
+  unter.textContent = [
+    c.rating ? "Rating " + c.rating : "",
+    c.art === "dip" ? "Dip" : "steigt",
+    c.alterMin > 0 ? "gesehen vor " + c.alterMin + " Min." : "gerade gesehen"
+  ].filter(Boolean).join(" · ");
+  name.append(titel, unter);
+  const plus = document.createElement("span");
+  plus.className = "chance-gewinn";
+  plus.textContent = "+" + fmt(c.gewinn);
+  plus.title = "Gewinn nach 5 % EA-Gebühr, wenn der Preis zum Ziel zurückkehrt";
+  kopf.append(portrait(c.playerId, c.name), name, plus);
+
+  const zahlen = document.createElement("div");
+  zahlen.className = "chance-zahlen";
+  for (const [label, wert] of [["Kaufen bis", fmt(c.kaufBis)], ["Ziel", fmt(c.ziel)], ["Gewinn", Math.round(c.marge * 100) + " %"]]) {
+    const feld = document.createElement("div");
+    const l = document.createElement("span");
+    l.textContent = label;
+    const w = document.createElement("b");
+    w.textContent = wert;
+    feld.append(l, w);
+    zahlen.append(feld);
+  }
+
+  const grund = document.createElement("p");
+  grund.className = "chance-grund";
+  grund.textContent = c.grund + ".";
+
+  const knopf = document.createElement("button");
+  knopf.type = "button";
+  knopf.className = schonDrauf ? "secondary chance-knopf drauf" : "go chance-knopf";
+  knopf.textContent = schonDrauf ? "Auf deiner Liste ✓" : "Auf meine Liste";
+  knopf.disabled = schonDrauf || laeuft;
+  if (laeuft && !schonDrauf) knopf.title = "Während der Bot läuft, bleibt die Liste, wie sie ist.";
+  knopf.addEventListener("click", () => chanceAufListe(c));
+
+  row.append(kopf, chanceSpark(c), zahlen, grund, knopf);
+  return row;
+}
+
+function renderChancen() {
+  const liste = $("chancen-liste");
+  if (!liste) return;
+  const aufListe = new Set(targets.map(targetKey));
+  const laeuft = isRunning();
+  const key = JSON.stringify([chancen.map((c) => [c.key, c.kaufBis, c.ziel, c.alterMin, c.name]), [...aufListe], laeuft, chancenStand, Boolean(images)]);
+  if (key === chancenKey) return;
+  chancenKey = key;
+  liste.replaceChildren(...chancen.map((c) => chanceZeile(c, aufListe.has(c.key), laeuft)));
+  $("chancen-stand").textContent = chancenStand.karten
+    ? (chancenStand.karten === 1 ? "1 Karte" : fmt(chancenStand.karten) + " Karten") + " beobachtet · " + fmt(chancenStand.reif) + " mit genug Verlauf"
+    : "Noch keine Preise gemerkt";
+  $("chancen-leer").hidden = chancen.length > 0;
+  if (!chancen.length) {
+    $("chancen-leer-text").textContent = !MARKT
+      ? "Die Markt-Analyse ist nicht geladen. Lade die Web App neu (F5)."
+      : chancenStand.reif > 0
+        ? "Gerade ist keine Karte günstig genug. Der Bot schaut bei jeder Suche weiter – fällt ein Preis, steht die Karte hier."
+        : "Der Bot lernt noch die Preise. Jede Suche füllt den Verlauf, nach etwa einer Stunde erkennt er Chancen. Ein Markt-Scan beschleunigt das.";
+    $("chancen-fortschritt").hidden = chancenStand.reif > 0;
+    $("chancen-balken").style.width = Math.round(chancenStand.fortschritt * 100) + "%";
+  }
+}
+
+function chancenMeldung(text, level, mitStart) {
+  const el = $("chancen-msg");
+  el.className = "hint" + (level ? " " + level : "");
+  el.textContent = text;
+  if (mitStart) {
+    const start = document.createElement("button");
+    start.type = "button";
+    start.className = "go chancen-start";
+    start.textContent = "Jetzt starten";
+    start.addEventListener("click", chanceStarten);
+    el.append(" ", start);
+  }
+}
+
+async function chanceAufListe(c) {
+  if (isRunning()) {
+    chancenMeldung("Während der Bot läuft, bleibt die Liste, wie sie ist. Stoppe ihn zuerst.", "warn");
+    return;
+  }
+  // Wie ein Live-Filter: Der Verkaufspreis faehrt mit (salePrice = Ziel), die
+  // Chance laeuft ab (expiresAt), und preisAt sagt, wann gemessen wurde.
+  const neu = {
+    playerId: c.playerId, playerName: c.name, rating: c.rating, rarity: c.rarity, maxPrice: c.kaufBis,
+    source: "chance", salePrice: c.ziel, preisAt: c.preisAt, expiresAt: c.bis, score: c.score
+  };
+  const key = targetKey(neu);
+  const index = targets.findIndex((t) => targetKey(t) === key);
+  if (index < 0 && targets.length >= MAX_TARGETS) {
+    chancenMeldung("Deine Liste ist voll (höchstens " + MAX_TARGETS + " Spieler). Entferne zuerst einen unter Snipen.", "warn");
+    return;
+  }
+  if (index >= 0) targets[index] = Object.assign({}, targets[index], neu);
+  else targets.push(neu);
+  targets = sanitizeTargets(targets);
+  await saveSettings();
+  renderTargets(true);
+  chancenKey = "";
+  renderChancen();
+  renderAssistent();
+  chancenMeldung(c.name + " ist auf deiner Liste: kaufen bis " + fmt(c.kaufBis) + ", Ziel " + fmt(c.ziel) + ".", "ok", true);
+}
+
+// "Jetzt starten": zur Liste unter Snipen und gleich die Zusammenfassung vor
+// dem Start zeigen. Gestartet wird erst dort - mit allen Pruefungen wie sonst.
+function chanceStarten() {
+  setSnipeMode("manual");
+  goToStep(3);
+  selectTab($("tab-snipe"), false);
+  openStartModal();
+}
+
+function marktScannen() {
+  const knopf = $("scan-market");
+  if (!knopf || knopf.disabled) {
+    chancenMeldung($("market-scan-msg").textContent || "Der Markt-Scan geht gerade nicht.", "warn");
+    return;
+  }
+  knopf.click();
+  chancenMeldung("Markt wird gescannt … Der Scan kauft nichts, er füllt nur den Preisverlauf.", "");
+}
+
+// --- Assistent -------------------------------------------------------------
+
+function assistentZustand() {
+  const st = letzterStatus;
+  const usage = (st && st.usage) || {};
+  const stapel = (st && st.stapel) || {};
+  const s = (st && st.stats) || {};
+  const zahlOderNull = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+  const auswahl = currentTarget();
+  const ziele = targets.length ? targets.filter((t) => !liveAbgelaufen(t)) : auswahl ? [auswahl] : [];
+  const preise = ziele.map((t) => Number(t.maxPrice) || 0).filter((p) => p > 0);
+  return {
+    verbunden: Boolean(st),
+    imEigenenFenster: !BOT,
+    session: Boolean(st && st.session),
+    laeuft: Boolean(st && st.running),
+    cooldownMin: st && st.cooldown ? Number(st.cooldown.leftMin) || 0 : 0,
+    cooldownGrund: st && st.cooldown ? st.cooldown.reason || "" : "",
+    fremderBot: Boolean(st && st.fremderBot),
+    andererTab: Boolean(st && st.andererTab),
+    ohneGrenzen: Boolean(st && st.fstModus),
+    suchenStunde: Number(usage.searchesHour) || 0,
+    gekauft: s.bought || 0,
+    ausgegeben: s.spent || 0,
+    transfer: stapel.at ? zahlOderNull(stapel.transfer) : null,
+    nichtZugewiesen: stapel.at ? zahlOderNull(stapel.nichtZugewiesen) : null,
+    nzUnbegrenzt: Boolean($("nichtZugewiesenUnbegrenzt") && $("nichtZugewiesenUnbegrenzt").checked),
+    coins: st ? zahlOderNull(st.credits) : null,
+    letzterStopp: (st && st.letzterStopp) || null,
+    jetzt: Date.now(),
+    ziele: ziele.length,
+    billigstesZiel: preise.length ? Math.min(...preise) : 0,
+    chancen: chancenFrisch(),
+    daten: chancenStand
+  };
+}
+
+function assistentKnopf(a, haupt) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = haupt ? "go" : "secondary";
+  b.textContent = a.label;
+  b.dataset.aktion = a.id;
+  if (a.id === "stopp" && !(letzterStatus && letzterStatus.running)) b.disabled = true;
+  b.addEventListener("click", () => assistentAktion(a.id));
+  return b;
+}
+
+function renderAssistent() {
+  const box = $("assistent");
+  if (!box) return;
+  if (!ASSISTENT) {
+    box.hidden = true;
+    return;
+  }
+  // Ein Knopf, der nur zum Reiter fuehrt, auf dem man schon ist, faellt weg.
+  const offen = WURZEL.querySelector('.tab[aria-selected="true"]');
+  const offenId = offen ? offen.id : "";
+  const hinweise = ASSISTENT.lage(assistentZustand()).map((h) =>
+    Object.assign({}, h, { aktionen: h.aktionen.filter((a) => ASSISTENT_REITER[a.id] !== offenId) }));
+  const key = JSON.stringify([hinweise, Boolean(letzterStatus && letzterStatus.running)]);
+  if (key === assistentKey) return;
+  assistentKey = key;
+  const haupt = hinweise[0] || { ton: "gut", titel: "Alles bereit", text: "Gerade gibt es nichts zu tun.", aktionen: [] };
+  box.dataset.ton = haupt.ton;
+  $("assistent-titel").textContent = haupt.titel;
+  $("assistent-text").textContent = haupt.text;
+  const mitBalken = typeof haupt.fortschritt === "number";
+  $("assistent-fortschritt").hidden = !mitBalken;
+  if (mitBalken) $("assistent-balken").style.width = Math.round(haupt.fortschritt * 100) + "%";
+  $("assistent-knoepfe").replaceChildren(...haupt.aktionen.map((a, i) => assistentKnopf(a, i === 0)));
+  $("assistent-knoepfe").hidden = !haupt.aktionen.length;
+  const rest = hinweise.slice(1, 5);
+  $("assistent-mehr").hidden = !rest.length;
+  $("assistent-mehr-titel").textContent = rest.length === 1 ? "1 weiterer Hinweis" : rest.length + " weitere Hinweise";
+  $("assistent-mehr-liste").replaceChildren(...rest.map((h) => {
+    const li = document.createElement("li");
+    li.dataset.ton = h.ton;
+    const t = document.createElement("b");
+    t.textContent = h.titel;
+    const text = document.createElement("span");
+    text.textContent = h.text;
+    li.append(t, text);
+    if (h.aktionen.length) li.append(assistentKnopf(h.aktionen[0], false));
+    return li;
+  }));
+}
+
+function assistentAktion(id) {
+  if (id === "chancen") selectTab($("tab-chancen"), false);
+  else if (id === "kaeufe") selectTab($("tab-buys"), false);
+  else if (id === "snipen") selectTab($("tab-snipe"), false);
+  else if (id === "stopp") $("stop").click();
+  else if (id === "scan") {
+    selectTab($("tab-chancen"), false);
+    marktScannen();
+  } else if (id === "neuladen") seiteNeuLaden();
+  else if (id === "webapp") chrome.tabs.create({ url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/" }).catch(() => {});
+}
+
+// In der Seite: die Web App selbst neu laden. Im eigenen Fenster: den
+// Web-App-Tab neu laden (oder einen oeffnen, wenn keiner da ist).
+async function seiteNeuLaden() {
+  if (BOT) {
+    location.reload();
+    return;
+  }
+  const tab = await webAppTab();
+  if (tab) chrome.tabs.reload(tab.id).catch(() => {});
+  else chrome.tabs.create({ url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/" }).catch(() => {});
+}
+
+// --- Einfach / Profi ---------------------------------------------------------
+
+function ansichtSetzen(wert, speichern) {
+  ansicht = wert === "einfach" ? "einfach" : "profi";
+  const ziel = WURZEL === document ? document.documentElement : WURZEL.querySelector(".blatt");
+  if (ziel) ziel.classList.toggle("einfach", ansicht === "einfach");
+  for (const b of WURZEL.querySelectorAll("#ansicht-wahl button")) {
+    const an = b.dataset.ansicht === ansicht;
+    b.classList.toggle("active", an);
+    b.setAttribute("aria-checked", String(an));
+  }
+  // Ein offener Reiter, den es in Einfach nicht gibt: zurueck zu Snipen.
+  const offen = tabList.find((t) => t.getAttribute("aria-selected") === "true");
+  if (ansicht === "einfach" && offen && offen.hasAttribute("data-profi")) selectTab($("tab-snipe"), false);
+  if (speichern) chrome.storage.local.set({ uiAnsicht: ansicht }).catch(() => {});
+}
+
+for (const b of WURZEL.querySelectorAll("#ansicht-wahl button")) {
+  b.addEventListener("click", () => ansichtSetzen(b.dataset.ansicht, true));
+}
+
+// --- Einfuehrung -------------------------------------------------------------
+
+function tourZeichnen() {
+  for (const seite of WURZEL.querySelectorAll("#tour-wrap .tour-seite")) seite.hidden = Number(seite.dataset.seite) !== tourSeite;
+  WURZEL.querySelectorAll("#tour-wrap .tour-punkte i").forEach((punkt, i) => punkt.classList.toggle("an", i + 1 === tourSeite));
+  $("tour-zurueck").textContent = tourSeite === 1 ? "Überspringen" : "Zurück";
+  $("tour-weiter").textContent = tourSeite === TOUR_SEITEN ? "Los geht's" : "Weiter";
+  // Seite 3: die Wahl zeigt, was gerade eingestellt ist.
+  const fst = Boolean($("fstModus") && $("fstModus").checked);
+  for (const option of WURZEL.querySelectorAll("#tour-wrap .tour-option")) {
+    const an = (option.dataset.fst === "true") === fst;
+    option.classList.toggle("an", an);
+    option.setAttribute("aria-checked", String(an));
+  }
+}
+
+function tourOeffnen() {
+  tourSeite = 1;
+  tourZeichnen();
+  $("tour-wrap").hidden = false;
+  nachObenScrollen();
+  $("tour-weiter").focus();
+}
+
+function tourSchliessen() {
+  $("tour-wrap").hidden = true;
+  chrome.storage.local.set({ tourV1: Date.now() }).catch(() => {});
+}
+
+$("tour-weiter").addEventListener("click", () => {
+  if (tourSeite >= TOUR_SEITEN) tourSchliessen();
+  else {
+    tourSeite += 1;
+    tourZeichnen();
+  }
+});
+$("tour-zurueck").addEventListener("click", () => {
+  if (tourSeite <= 1) tourSchliessen();
+  else {
+    tourSeite -= 1;
+    tourZeichnen();
+  }
+});
+for (const option of WURZEL.querySelectorAll("#tour-wrap .tour-option")) {
+  option.addEventListener("click", () => {
+    const fst = option.dataset.fst === "true";
+    if ($("fstModus").checked !== fst) {
+      $("fstModus").checked = fst;
+      // Derselbe Weg wie ein Klick in den Optionen: speichern, Hinweis, Status.
+      $("fstModus").dispatchEvent(new Event("change"));
+    }
+    tourZeichnen();
+  });
+}
+WURZEL.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("tour-wrap").hidden) {
+    event.preventDefault();
+    tourSchliessen();
+  }
+});
+if ($("tour-nochmal")) $("tour-nochmal").addEventListener("click", tourOeffnen);
+$("chancen-scan").addEventListener("click", marktScannen);
+
+// Was beim ersten Oeffnen gilt. Der Speicher wird VOR loadSettings gelesen:
+// loadSettings speichert bei neuen Nutzern sofort, danach waere nicht mehr zu
+// erkennen, ob es vorher schon Einstellungen gab.
+const ersterStartStand = chrome.storage.local.get(["settings", "uiAnsicht", "tourV1"]).catch(() => ({}));
+
+async function ersterStartAnwenden() {
+  const roh = (await ersterStartStand) || {};
+  const neu = !roh.settings;
+  // Neue Nutzer starten einfach, Bestandsnutzer behalten alles, wie es war.
+  ansichtSetzen(roh.uiAnsicht === "einfach" || roh.uiAnsicht === "profi" ? roh.uiAnsicht : neu ? "einfach" : "profi", false);
+  if (neu && !roh.tourV1) tourOeffnen();
+}
+
 // Neue Daten, waehrend das Popup offen ist? Direkt uebernehmen.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.playerList) loadPlayers().then(() => { renderSuggestions(); renderLiveFilters(); });
+  // 02.10.2026: Chancen neu rechnen - sie tragen die Spielernamen aus der Liste.
+  if (changes.playerList) loadPlayers().then(() => { renderSuggestions(); renderLiveFilters(); chancenRechnen(); renderChancen(); });
   // 28.09.2026: aktivLog gehoert dazu - sonst zeigt die Konkurrenz-Kachel
   // neue Laufmessungen erst nach dem naechsten Oeffnen des Popups.
   if (changes.priceHistory || changes.runStats || changes.purchases || changes.liveMarketResults || changes.aktivLog) loadData().then(renderVerkauf);
   if (changes.transferliste || changes.verkaeufe) loadVerkauf();
+  // 02.10.2026: neuer Preisverlauf aus content.js -> Chancen und Assistent.
+  if (changes.marktVerlauf) loadMarkt();
   if (changes.playerImages) {
     loadImages().then(() => {
       renderSuggestions();
@@ -9801,7 +10302,8 @@ if (!BOT && (!chrome.scripting || typeof chrome.scripting.executeScript !== "fun
   $("scan-market").disabled = true;
   setTimeout(() => chrome.runtime.reload(), 800);
 } else {
-  loadImages().then(loadSettings).then(loadPlayers).then(loadData).then(loadVerkauf).then(loadCollections).then(renderStep).then(poll);
+  loadImages().then(loadSettings).then(loadPlayers).then(loadData).then(loadVerkauf).then(loadCollections).then(renderStep)
+    .then(loadMarkt).then(ersterStartAnwenden).then(poll);
   setInterval(poll, 1500);
 }
 }

@@ -4951,3 +4951,140 @@ select:focus {
 @media (prefers-reduced-motion: reduce) {
   .mehr > summary::before { transition: none; }
 }
+
+/* ===========================================================================
+   Chancen, Assistent, Einfach/Profi, Einfuehrung (02.10.2026)
+   Nur bestehende Token - keine neuen Farbwelten. Die Klasse "einfach" sitzt am
+   Wurzelelement (eigenes Fenster: html, in der Leiste: .blatt).
+   =========================================================================== */
+
+.einfach [data-profi] { display: none !important; }
+/* Ohne die Sammlungen-Kachel teilen sich drei Kacheln die Breite. */
+.einfach .kacheln { grid-template-columns: repeat(3, 1fr); }
+
+/* Schalter Einfach / Profi oben rechts, kleiner als die Reiter. */
+.segmented.ansicht-wahl { display: inline-flex; flex: none; margin: 0; padding: 2px; gap: 2px; }
+.segmented.ansicht-wahl button { flex: none; min-height: 1.6rem; padding: 0 .6rem; font-size: .7rem; }
+
+/* --- Assistent: ein Satz, ein Knopf. Die linke Kante zeigt den Ton. --- */
+.assistent {
+  margin: var(--s-3) 0 0;
+  padding: .85rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.assistent[data-ton="gut"] { border-left-color: var(--green); }
+.assistent[data-ton="achtung"] { border-left-color: var(--amber); }
+.assistent[data-ton="stopp"] { border-left-color: var(--red); }
+.assistent-kopf { display: flex; gap: .7rem; align-items: flex-start; }
+.assistent-ico {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+.assistent[data-ton="gut"] .assistent-ico { background: #16c78424; color: var(--green); }
+.assistent[data-ton="achtung"] .assistent-ico { background: #ffc46624; color: var(--amber); }
+.assistent[data-ton="stopp"] .assistent-ico { background: #ff6b6b24; color: var(--red); }
+.assistent-ico svg { width: 17px; height: 17px; fill: currentColor; }
+.assistent-texte { min-width: 0; }
+.assistent-texte b { display: block; color: var(--text); font-size: .9rem; font-weight: 600; line-height: 1.35; }
+.assistent-texte p { margin: .2rem 0 0; color: #cfd5df; font-size: var(--fs-sm); line-height: 1.5; }
+.assistent-fortschritt { height: 6px; margin: .7rem 0 0; overflow: hidden; border-radius: var(--r-pill); background: var(--sunken); }
+.assistent-fortschritt > i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .4s ease; }
+.assistent-knoepfe { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 0; }
+.assistent-knoepfe button { flex: 1 1 auto; min-height: 0; padding: .55rem .8rem; border-radius: .5rem; font-size: .8rem; font-weight: 600; }
+.assistent-mehr { margin: .7rem 0 0; }
+.assistent-mehr > summary { color: var(--muted); font-size: var(--fs-sm); cursor: pointer; }
+.assistent-mehr ul { display: grid; gap: .45rem; margin: .45rem 0 0; padding: 0; list-style: none; }
+.assistent-mehr li {
+  padding: .5rem .6rem;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+}
+.assistent-mehr li[data-ton="gut"] { border-left-color: var(--green); }
+.assistent-mehr li[data-ton="achtung"] { border-left-color: var(--amber); }
+.assistent-mehr li[data-ton="stopp"] { border-left-color: var(--red); }
+.assistent-mehr li b { display: block; color: var(--text); font-weight: 600; }
+.assistent-mehr li span { color: var(--muted); }
+.assistent-mehr li button { display: block; min-height: 0; margin-top: .4rem; padding: .35rem .7rem; font-size: .75rem; }
+
+/* --- Chancen --- */
+.chancen-leiste { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: var(--s-3) 0 0; }
+.chancen-leiste .hint { flex: 1; min-width: 0; margin: 0; }
+.chancen-leiste button { flex: none; width: auto; min-height: 0; margin: 0; padding: .5rem .8rem; font-size: .8rem; }
+.chancen-liste { display: grid; gap: .6rem; margin: .7rem 0 0; }
+.chance {
+  padding: .8rem .9rem;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--green);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.chance[data-art="nachfrage"] { border-left-color: var(--accent); }
+.chance-kopf { display: flex; align-items: center; gap: .6rem; }
+.chance-kopf .portrait { flex: none; width: 34px; height: 34px; }
+.chance-name { flex: 1; min-width: 0; }
+.chance-name b { display: block; overflow: hidden; color: var(--text); font-size: .9rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.chance-name small { color: var(--muted); font-size: var(--fs-xs); }
+.chance-gewinn { flex: none; color: var(--green); font-size: 1.05rem; font-weight: 700; }
+.chance-spark { display: block; width: 100%; height: 28px; margin: .55rem 0 0; }
+.chance-spark polyline { fill: none; stroke: var(--green); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.chance[data-art="nachfrage"] .chance-spark polyline { stroke: var(--accent); }
+.chance-zahlen { display: grid; grid-template-columns: repeat(3, 1fr); gap: .4rem; margin: .55rem 0 0; }
+.chance-zahlen > div { padding: .4rem .5rem; border-radius: var(--r-sm); background: var(--surface-2); }
+.chance-zahlen span { display: block; color: var(--muted); font-size: var(--fs-xs); }
+.chance-zahlen b { color: var(--text); font-size: .85rem; font-weight: 600; }
+.chance-grund { margin: .5rem 0 0; color: #cfd5df; font-size: var(--fs-sm); line-height: 1.45; }
+.chance-knopf { width: 100%; min-height: 0; margin: .6rem 0 0; padding: .6rem; border-radius: .5rem; font-size: .85rem; font-weight: 600; }
+.chance-knopf.drauf { color: var(--green); }
+.chancen-leer {
+  margin: .7rem 0 0;
+  padding: 1rem;
+  border: 1px dashed var(--line-soft);
+  border-radius: var(--r-lg);
+  text-align: center;
+}
+.chancen-leer b { color: var(--text); font-size: .9rem; }
+.chancen-leer p { margin: .35rem 0 0; color: var(--muted); font-size: var(--fs-sm); line-height: 1.5; }
+#chancen-msg { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+#chancen-msg.ok { color: var(--green); }
+#chancen-msg .chancen-start { min-height: 0; padding: .45rem .9rem; border-radius: .5rem; font-size: .8rem; font-weight: 600; }
+.target .name small.target-flag.chance-flag { color: var(--green); }
+
+/* --- Einfuehrung --- */
+.tour h2 { margin: .3rem 0 .5rem; color: var(--text); font-size: 1.15rem; font-weight: 600; }
+.tour p { margin: .4rem 0 0; color: #cfd5df; font-size: .85rem; line-height: 1.55; }
+.tour-punkte { display: flex; gap: .35rem; }
+.tour-punkte i { width: 22px; height: 4px; border-radius: var(--r-pill); background: #ffffff2e; }
+.tour-punkte i.an { background: var(--accent); }
+.tour-liste { margin: .6rem 0 0; padding-left: 1.2rem; color: #cfd5df; font-size: .85rem; line-height: 1.55; }
+.tour-liste li + li { margin-top: .35rem; }
+.tour-wahl { display: grid; gap: .5rem; margin: .6rem 0 0; }
+.tour-option {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: .7rem .8rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+}
+.tour-option b { display: block; font-size: .9rem; font-weight: 600; }
+.tour-option span { display: block; margin-top: .15rem; color: var(--muted); font-size: var(--fs-sm); font-weight: 400; line-height: 1.45; }
+.tour-option.an { border-color: var(--accent); background: var(--accent-weak); }
+.tour .modal-actions { margin-top: 1rem; }
+.hilfe-tour { width: 100%; margin: 0 0 .8rem; }
+@media (prefers-reduced-motion: reduce) {
+  .assistent-fortschritt > i { transition: none; }
+}
