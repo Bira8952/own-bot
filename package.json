@@ -1,0 +1,8 @@
+{
+  "name": "fc27-own-bot",
+  "version": "4.26.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test --test-reporter=spec \"tests/*.test.cjs\""
+  }
+}

@@ -1,0 +1,1379 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>FC27 Own Bot</title>
+<link rel="stylesheet" href="popup-design.css">
+</head>
+<body>
+  <div class="top">
+    <div class="brand-row">
+      <div class="brand"><img src="img/icon128.png" alt=""><span>FC27 <strong>Own Bot</strong><small>DEIN TRANSFERMARKT-ASSISTENT</small></span></div>
+    </div>
+
+    <!-- Vier Kacheln im Kopf: Coins, Sammlungen, Markt, Heute. Aufbau und
+         Werte wie FSTs Mini-Dashboard (style.css Z. 4771-4900), aber mit
+         eigenen Zahlen. Keine Kachel fragt EA - alles kommt aus dem, was wir
+         schon wissen. -->
+    <div class="kacheln mini-dash" role="group" aria-label="Überblick">
+      <div class="kachel" id="s-credits-box" title="Dein Kontostand laut EA, aktualisiert nach jedem Kauf">
+        <b class="coin" id="s-credits">–</b>
+        <span id="s-credits-label">Coins</span>
+      </div>
+      <button class="kachel" type="button" id="kachel-sammlungen" aria-label="Sammlungen: gespeicherte Ziellisten öffnen">
+        <b id="kachel-sammlungen-zahl">0</b>
+        <span>Sammlungen</span>
+      </button>
+      <button class="kachel" type="button" id="kachel-markt" aria-label="Markt: wie gut läuft es gerade" aria-expanded="false">
+        <span class="tacho-box">
+          <!-- Wie FSTs Mini-Gauge (scripts.js Z. 20430-20510): Bogen 70x44,
+               Bahn #222c38, Verlauf Rot-Gelb-Gruen, weisser Punkt. Der Bogen
+               ist bis zum Wert gefuellt (popup.js setzt stroke-dasharray). -->
+          <svg class="tacho gauge-svg gauge-svg--mini" viewBox="0 0 70 44" aria-hidden="true">
+            <defs>
+              <linearGradient id="tacho-verlauf" gradientUnits="userSpaceOnUse" x1="7" y1="0" x2="63" y2="0">
+                <stop offset="0%" stop-color="#EA3943"/><stop offset="27%" stop-color="#EA8C00"/><stop offset="50%" stop-color="#F3D42F"/><stop offset="73%" stop-color="#93D900"/><stop offset="100%" stop-color="#16C784"/>
+              </linearGradient>
+            </defs>
+            <path class="tacho-spur" d="M 7 36 A 28 28 0 0 1 63 36"/>
+            <path class="tacho-wert" id="tacho-bogen" d="M 7 36 A 28 28 0 0 1 63 36" pathLength="100" stroke-dasharray="0 100" stroke="url(#tacho-verlauf)" stroke-opacity="0"/>
+            <circle class="tacho-knopf" id="tacho-knopf" cx="7" cy="36" r="5.5" visibility="hidden"/>
+          </svg>
+          <b id="kachel-markt-zahl">–</b>
+        </span>
+        <span>Markt</span>
+      </button>
+      <div class="kachel" id="kachel-heute" title="Suchen heute und in dieser Stunde. Die Grenzen schützen dein Konto.">
+        <b id="kachel-heute-zahl">–</b>
+        <span>Heute</span>
+      </div>
+    </div>
+
+    <!-- Detail zum Markt-Tacho. Alle Zahlen stammen aus unseren eigenen
+         Laeufen - es wird nichts nachgeladen. -->
+    <!-- Blatt von unten, wie die Fenster bei FST: Esc oder ein Klick daneben
+         schliesst es. -->
+    <div class="blatt-hinter" id="markt-detail" hidden>
+      <section class="blatt-fenster" role="dialog" aria-modal="true" aria-label="Markt im Detail">
+        <div class="blatt-griff" aria-hidden="true"></div>
+        <div class="blatt-kopf">
+          <span class="blatt-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 18 4-6"/></svg></span>
+          <div class="blatt-texte"><b>Markt</b><small>Nur aus deinen eigenen Läufen</small></div>
+          <button type="button" class="blatt-zu" id="markt-detail-zu" aria-label="Schließen"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8"/></svg></button>
+        </div>
+        <div class="blatt-koerper">
+        <div class="markt-zahl">
+          <b id="markt-gross">–</b>
+          <span id="markt-wort" class="markt-wort">keine Daten</span>
+        </div>
+        <!-- Fuenf Farbstuecke wie FSTs Aktivitaets-Streifen; der weisse Punkt
+             (markt-zeiger) sitzt per left in Prozent. -->
+        <div class="markt-balken"><i class="s1"></i><i class="s2"></i><i class="s3"></i><i class="s4"></i><i class="s5"></i><span id="markt-zeiger"></span></div>
+        <p class="hint" id="markt-zustand"></p>
+        <!-- Getrennte Zahlen (27.09.2026): Die grosse Zahl oben mischt den
+             Markt und den eigenen Zustand. Dadurch konnte sie fallen, weil der
+             letzte Markt-Scan wenige Filter gebracht hat - obwohl am Markt
+             alles gleich war. Deshalb steht beides hier noch einmal einzeln. -->
+        <p class="hint">Die Zahl oben mischt beides. Getrennt sieht es so aus:</p>
+        <div class="markt-boxen">
+          <div class="markt-box"><span>Markt selbst</span><b id="markt-nurmarkt">–</b></div>
+          <div class="markt-box"><span>Deine Ausrüstung</span><b id="markt-ausruestung">–</b></div>
+        </div>
+        <div class="markt-boxen">
+          <div class="markt-box"><span>Konkurrenz</span><b id="markt-konkurrenz">–</b></div>
+          <div class="markt-box"><span>Treffer / Erfolg</span><b id="markt-effizienz">–</b></div>
+        </div>
+        <div class="markt-box markt-breit"><span>Preise gerade</span><b id="markt-preise">–</b></div>
+        <div class="markt-box markt-breit"><span>Nächstes gutes Fenster</span><b id="markt-naechstes">–</b></div>
+        <div class="markt-box markt-breit"><span>Preis-Gedächtnis</span><b id="markt-gedaechtnis">–</b></div>
+        <p class="hint" id="markt-detail-kopf"></p>
+        <ul class="markt-teile" id="markt-teile"></ul>
+        <p class="hint" id="markt-stunden"></p>
+        <p class="hint">Die Zahl kommt nur aus deinen eigenen Suchen und Käufen. Sie wird besser, je mehr der Bot gelaufen ist.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- Blatt: die Zahlen des Tages (Kachel "Heute"). -->
+    <div class="blatt-hinter" id="heute-blatt" hidden>
+      <section class="blatt-fenster" role="dialog" aria-modal="true" aria-label="Deine Zahlen heute">
+        <div class="blatt-griff" aria-hidden="true"></div>
+        <div class="blatt-kopf">
+          <span class="blatt-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+          <!-- Seit 25.09.2026 stehen im selben Blatt auch die letzten 7 Tage. -->
+          <div class="blatt-texte"><b>Heute &amp; letzte 7 Tage</b><small>Deine Suchen und Käufe</small></div>
+          <button type="button" class="blatt-zu" id="heute-blatt-zu" aria-label="Schließen"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8"/></svg></button>
+        </div>
+        <div class="blatt-koerper">
+        <div class="blatt-zeilen" id="heute-zeilen"></div>
+        <p class="hint" data-modus="streng">Die Grenzen schützen dein Konto. EA sperrte schon bei rund 450 Suchen am Tag. Es zählt alles zusammen, auch andere Bots im selben Tab.</p>
+        <p class="hint" data-modus="fst" hidden>Es gibt keine eigene Grenze. EA sperrte schon bei rund 450 Suchen am Tag. Es zählt alles zusammen, auch andere Bots im selben Tab.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- Blatt: gespeicherte Sammlungen (Kachel "Sammlungen"). -->
+    <div class="blatt-hinter" id="sammlungen-blatt" hidden>
+      <section class="blatt-fenster" role="dialog" aria-modal="true" aria-label="Gespeicherte Sammlungen">
+        <div class="blatt-griff" aria-hidden="true"></div>
+        <div class="blatt-kopf">
+          <span class="blatt-ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg></span>
+          <div class="blatt-texte"><b>Sammlungen</b><small>Deine gespeicherten Listen</small></div>
+          <button type="button" class="blatt-zu" id="sammlungen-blatt-zu" aria-label="Schließen"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8"/></svg></button>
+        </div>
+        <div class="blatt-koerper">
+        <div class="blatt-zeilen" id="sammlungen-liste"></div>
+        <p class="hint">Eine Sammlung merkt sich Spieler und Zielpreise. Sichern kannst du sie unter Snipen → Manuell → Schritt 3.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- Reiter mit kleinen Bildern, kleben zusammen mit der Standzeile oben. -->
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tab-snipe" data-view="view-snipe" aria-controls="view-snipe" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>Snipen</button>
+      <button class="tab" role="tab" id="tab-filters" data-view="view-filters" aria-controls="view-filters" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>Filter</button>
+      <button class="tab" role="tab" id="tab-buys" data-view="view-buys" aria-controls="view-buys" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-1 13H6z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>Käufe</button>
+      <button class="tab" role="tab" id="tab-settings" data-view="view-settings" aria-controls="view-settings" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Optionen</button>
+      <button class="tab" role="tab" id="tab-help" data-view="view-help" aria-controls="view-help" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.7M12 17h.01"/></svg>Hilfe</button>
+    </nav>
+
+    <!-- Schmale Status-Zeile, klebt mit den Kacheln und Reitern oben (30.09.2026).
+         Punkt und Text links, rechts Verbindung und Hilfe. Darunter - nur im
+         Lauf - Stopp und "Naechster Filter", damit sie beim Scrollen immer
+         erreichbar bleiben. Der Text ist auf zwei Zeilen begrenzt; ein Klick
+         darauf zeigt ihn ganz (popup.js). -->
+    <section class="board-head statuszeile" aria-label="Status">
+      <span class="status-punkt" aria-hidden="true"></span>
+      <div id="status" data-level="idle" aria-live="polite" role="button" aria-expanded="false" tabindex="0" title="Ein Klick zeigt den ganzen Text.">Verbinde mit der Web App …</div>
+      <div class="controls">
+        <!-- Gestartet wird im Snipen-Bereich ("Sniping vorbereiten" / "Autopilot
+             starten"). Der Start-Knopf hier oben oeffnete immer den manuellen
+             Dialog - auch im Auto-Modus - und war doppelt. Er bleibt nur als
+             unsichtbarer Anker fuer die Start-Logik. -->
+        <div id="session" class="pill">Verbinde …</div>
+        <button id="start" type="button" disabled hidden>Start</button>
+        <!-- Springt in den Hilfe-Reiter, und zwar zum Absatz des Reiters,
+             der gerade offen ist (25.09.2026). Vorher musste man den
+             passenden Absatz selbst suchen. -->
+        <button class="hilfe-sprung" id="hilfe-knopf" type="button" aria-label="Hilfe zu dieser Seite" title="Hilfe zu dieser Seite">?</button>
+      </div>
+      <div class="lauf-knoepfe">
+        <button class="ico ico-stop" id="stop" type="button" disabled hidden>Stopp</button>
+        <!-- Nur waehrend einer Rotation sichtbar (25.09.2026): beendet den
+             laufenden Filter, nicht den ganzen Lauf. Wer bisher einen toten
+             Filter loswerden wollte, musste alles stoppen und neu starten -
+             samt neuem Markt-Scan. -->
+        <button id="naechsterFilter" type="button" disabled hidden>Nächster Filter</button>
+      </div>
+    </section>
+  </div>
+
+  <main>
+    <!-- Anzeigetafel und Hinweiszeilen (30.09.2026): Sie standen im klebenden
+         Kopf und machten ihn bis zu 385 px hoch. Jetzt sind sie eine normale
+         Karte am Anfang des scrollenden Inhalts - im Kopf bleiben nur Kacheln,
+         Reiter und die Status-Zeile. Alle IDs sind unveraendert. -->
+    <section class="board" aria-label="Gerade jetzt">
+      <div class="abschnitt-kopf"><h3 class="abschnitt-titel">Gerade jetzt</h3></div>
+      <div class="score">
+        <div class="ico ico-bag" title="Wie viele Spieler dieser Lauf gekauft hat"><b id="s-bought">0</b><span>gekauft</span></div>
+        <div class="ico ico-wallet" title="Coins, die dieser Lauf ausgegeben hat"><b id="s-spent">0</b><span>ausgegeben</span></div>
+        <div class="ico ico-trend" id="s-profit-box" title="Geschätzter Gewinn der Käufe dieses Laufs: aktueller Marktpreis minus 5 % EA-Gebühr minus Kaufpreis. Echt wird er erst beim Verkauf."><b id="s-profit">–</b><span>Gewinn</span></div>
+      </div>
+      <p class="hint" id="health"></p>
+      <p class="hint" id="last-search" hidden></p>
+      <p class="hint warn" id="run-hint"></p>
+      <p class="hint warn" id="session-hint"></p>
+      <p class="hint warn" id="nutzung-hint"></p>
+      <p class="hint warn" id="fremd-hint"></p>
+      <p class="hint warn" id="modus-hint"></p>
+      <p class="hint warn" id="ausnahme-hint"></p>
+    </section>
+
+    <!-- ============================ Snipen ============================ -->
+    <section id="view-snipe" role="tabpanel" aria-labelledby="tab-snipe">
+      <!-- Meldung nach dem Laden aus dem Filter-Dialog ("Frisch geprüft: …").
+           Ganz oben, damit sie in Auto, Manuell und im Lauf zu sehen ist
+           (popup.js zeigeSnipeNotiz, laeuft nach 20 s ab). -->
+      <p class="hint snipe-notiz" id="snipe-notiz" role="status" aria-live="polite" hidden></p>
+      <!-- ====================== LAUFBILDSCHIRM ====================== -->
+      <div id="running-hud" class="running-hud" hidden>
+        <!-- Nur Laufzeit und Puls. Status und Stopp stehen einmal, oben im Kopf. -->
+        <div class="hud-banner" id="hud-banner">
+          <span class="hud-pulse"></span>
+          <span id="hud-timer">Laufzeit: –</span>
+          <b id="hud-status-text" hidden></b>
+          <small id="hud-rotation" hidden></small>
+        </div>
+
+        <!-- Welche Einstellungen der laufende Lauf benutzt (27.09.2026). Im Lauf
+             sind alle Felder ausgeblendet - ohne diese Zeile stand nirgends, mit
+             welchem Tempo und welchem Budget er gestartet ist. -->
+        <p class="hint" id="hud-settings" hidden></p>
+
+        <div class="hud-pause-bar">
+          <div class="hud-pause-info">
+            <span>Sicherheitspause</span>
+            <small id="hud-pause-text">in … Suchen</small>
+          </div>
+          <div class="hud-progress-track">
+            <div id="hud-pause-fill" class="hud-progress-fill" style="width: 100%"></div>
+          </div>
+        </div>
+
+        <!-- Aktiver Spieler Fokuskarte -->
+        <div class="hud-card" id="hud-target-card">
+          <div class="hud-card-head">
+            <span class="eyebrow ico ico-target">Aktueller Scan</span>
+            <span id="hud-scan-count" class="pill">Suche 0</span>
+          </div>
+          <div class="hud-player-row">
+            <div id="hud-player-portrait" class="hud-portrait"></div>
+            <div class="hud-player-info">
+              <strong id="hud-player-name">Wird gesucht …</strong>
+              <div class="hud-player-meta">
+                <span id="hud-player-rating" class="rating">–</span>
+                <span id="hud-player-target-price">Zielpreis: –</span>
+              </div>
+            </div>
+          </div>
+          <div class="hud-card-footer" id="hud-last-search-text">
+            Letzte Suche: Warte auf Ergebnisse …
+          </div>
+        </div>
+
+        <!-- Live Gebote im Rennen -->
+        <div class="hud-bids-wrap" id="hud-bids-wrap" hidden>
+          <div class="hud-section-head">
+            <span class="ico ico-gavel">Auktionen im Rennen</span>
+            <span id="hud-bids-badge" class="pill">0 aktiv</span>
+          </div>
+          <div id="hud-bids-list" class="hud-bids-list"></div>
+        </div>
+
+        <!-- Live Ticker Feed -->
+        <div class="hud-feed-wrap">
+          <div class="hud-section-head">
+            <span class="ico ico-list">Verlauf</span>
+            <small>live</small>
+          </div>
+          <div id="hud-feed-list" class="hud-feed-list">
+            <div class="hud-feed-empty">Warte auf Aktionen …</div>
+          </div>
+        </div>
+
+        <!-- Nach dem Stopp bleibt dieses Fenster stehen (25.09.2026). Vorher
+             waren Ticker, "Letzte Suche" und der Stopp-Grund in derselben
+             Sekunde weg, in der man sie lesen wollte. Erst dieser Knopf holt
+             die Einstellungen zurueck. -->
+        <div class="hud-ende" id="hud-ende" hidden>
+          <p id="hud-ende-grund"></p>
+          <button type="button" class="secondary" id="hud-ende-zu">Weiter einstellen</button>
+        </div>
+      </div>
+
+      <!-- =================== KONFIGURATION (Stillstand) =================== -->
+      <div id="snipe-config-container">
+        <!-- Modus-Umschalter -->
+        <div class="snipe-mode-bar">
+          <div class="segmented snipe-mode-selector" id="snipe-mode-selector">
+            <button type="button" data-mode="auto" class="active">Auto</button>
+            <button type="button" data-mode="manual">Manuell</button>
+          </div>
+        </div>
+
+        <!-- Auto-Modus Panel -->
+        <div id="snipe-auto-panel">
+          <div class="page-intro">
+            <span class="eyebrow">1-KLICK AUTOPILOT</span>
+            <h2>Automatisch snipen.</h2>
+            <p>Wähle einen Spieler. Der Bot prüft live den Marktpreis. Er rechnet Abschlag, 5 % EA-Gebühr und Mindestgewinn ab. Er startet nur, wenn Gewinn bleibt.</p>
+          </div>
+
+          <!-- Zwei Wege wie bei FST: die Rotation ueber viele Live-Filter oder
+               ein einzelner Spieler. Der Haken darunter bleibt als Speicher -
+               die Karten schalten ihn um. -->
+          <div class="auto-modi" role="radiogroup" aria-label="Wie der Autopilot arbeitet">
+            <!-- Aufbau wie FSTs Modus-Karten (.mode-tile): Symbolkasten, Name,
+                 Beschreibung, Haken-Kreis unten rechts, Marke oben rechts. -->
+            <button class="auto-modus mode-tile" id="auto-modus-einzel" type="button" role="radio" aria-checked="true">
+              <span class="mode-tile__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg></span>
+              <span class="auto-modus-kopf"><b>Ein Spieler</b></span>
+              <span class="auto-modus-text">Du wählst den Spieler. Der Bot prüft den Preis und schnappt nur diesen.</span>
+              <span class="mode-tile__check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+            </button>
+            <button class="auto-modus mode-tile" id="auto-modus-rotation" type="button" role="radio" aria-checked="false">
+              <span class="mode-tile__ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
+              <span class="auto-modus-kopf"><b>Live-Filter</b><small class="auto-tipp mode-tile__tag">Mehr Auswahl</small></span>
+              <span class="auto-modus-text">Der Bot nimmt die besten Live-Filter der Reihe nach. Ein Filter, der gerade dran war, kühlt erst ab.</span>
+              <span class="mode-tile__check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+            </button>
+          </div>
+
+          <div class="block" id="rot-block" hidden>
+            <div class="block-head">
+              <h3 class="ico ico-radar">Jetzt in der Reihe</h3>
+              <span class="pill" id="rot-anzahl">0 Filter</span>
+            </div>
+            <!-- Woher die Filter kommen (28.09.2026). FSTs Custom-Modus:
+                 Der Nutzer kann statt der Scan-Treffer seine eigene
+                 Zielliste abfahren lassen. Standard bleibt Live-Filter -
+                 dann aendert sich fuer niemanden etwas. -->
+            <label class="rot-quelle" for="rotQuelle">Woher die Filter kommen
+              <select id="rotQuelle">
+                <option value="live">Aus dem Markt-Scan (Live-Filter)</option>
+                <option value="liste">Meine Zielliste der Reihe nach</option>
+              </select>
+            </label>
+            <div class="rot-streifen" id="rot-streifen"></div>
+            <p class="hint" id="rot-plan"></p>
+            <!-- Die vier Felder der Rotation (Kaeufe je Filter, Suchen je Filter, Pause,
+                 Mindestpreis) standen vorher im Block "Spieler fuer Autopilot waehlen". Den
+                 versteckt renderAutoModus im Rotations-Modus - und damit auch die Felder:
+                 Sie waren nie zu sehen, die Rotation lief mit den Standardwerten (30.09.2026
+                 beim Vergleich mit FST gefunden). Hier gehoeren sie hin: in den Block, der
+                 nur im Rotations-Modus gezeigt wird. -->
+            <div id="rot-optionen" class="row" hidden>
+              <div class="grow"><label for="rotKaeufeProFilter">Käufe je Filter</label><input id="rotKaeufeProFilter" type="number" min="1" max="10" step="1"></div>
+              <div class="grow"><label for="rotSuchenProFilter">Suchen je Filter</label><input id="rotSuchenProFilter" type="number" min="10" max="80" step="1"></div>
+              <div class="grow"><label for="rotPauseS">Pause (Sekunden)</label><input id="rotPauseS" type="number" min="25" max="300" step="1"></div>
+              <!-- FST-Modus (01.10.2026): FSTs "Transaktionen je Filter" (Standard 10). Im
+                   strengen Modus rechnet der Bot 2 x Kaeufe; das Feld ist dann ausgeblendet. -->
+              <div class="grow" data-modus="fst" hidden><label for="rotAnfrageProFilter">Versuche je Filter</label><input id="rotAnfrageProFilter" type="number" min="1" max="30" step="1"></div>
+              <!-- Mindestpreis der Karte (27.09.2026): FSTs min_price, Standard
+                   1.200 Coins. Unter diesem Marktpreis bleibt nach EAs Gebuehr
+                   fast nichts uebrig, der Filter kostet aber genauso viele
+                   Suchen. 0 heisst: keine Untergrenze. -->
+              <div class="grow"><label for="rotMinPreis">Mindestpreis der Karte</label><input id="rotMinPreis" type="number" min="0" max="1000000" step="50"></div>
+            </div>
+            <!-- Welche Filter der Bot fahren darf (27.09.2026). Nachbau von
+                 FSTs min_filter_score / max_filter_score und den Haken je
+                 Abzeichen (scripts.js Z. 41954-41960). Standard ist 0 bis 10
+                 und alle Haken gesetzt - dann aendert sich nichts.
+                 Absichtlich HIER und nicht bei den Rotations-Feldern weiter
+                 unten: Der Block darunter wird im Rotations-Modus
+                 ausgeblendet. -->
+            <details class="settings-group" id="rot-auswahl">
+              <summary>Welche Filter der Bot fahren darf<small>Wertung und Abzeichen aussuchen</small></summary>
+              <div class="settings-content">
+                <div class="row">
+                  <div class="grow"><label for="rotWertungMin">Wertung mindestens</label><input id="rotWertungMin" type="number" min="0" max="10" step="0.1"></div>
+                  <div class="grow"><label for="rotWertungMax">Wertung höchstens</label><input id="rotWertungMax" type="number" min="0" max="10" step="0.1"></div>
+                </div>
+                <p class="help-text">Skala 0 bis 10, wie auf den Filterkarten. Standard: 0 bis 10. Dann zählt die Wertung nicht, sie sortiert nur.</p>
+                <details class="mehr"><summary>Mehr erfahren</summary>
+                  <p class="help-text">Vorsicht: Frisch gescannte Filter liegen oft unter 2,0. Wer hier 6 einträgt, sieht schnell „deine Auswahl lässt keinen zu“.</p>
+                </details>
+                <!-- 28.09.2026: FSTs include_rule je Abzeichen (scripts.js
+                     Z. 41956-41960). Bisher konnten die Haken nur AUSSPERREN.
+                     Neu: Der Modus "nur" verlangt, dass ein Filter mindestens
+                     ein angehaktes Abzeichen HAT. Standard bleibt das alte
+                     Aussperren - fuer Bestandsnutzer aendert sich nichts. -->
+                <label for="rotAbzModus">Was die Haken bewirken
+                  <select id="rotAbzModus">
+                    <option value="sperren">Haken weg sperrt nur: Filter mit diesem Abzeichen überspringen (wie bisher)</option>
+                    <option value="nur">Nur Filter fahren, die mindestens ein angehaktes Abzeichen haben</option>
+                  </select>
+                </label>
+                <p class="help-text">Ein Haken heißt: Der Bot darf Filter mit diesem Abzeichen fahren. Haken weg heißt: Er überspringt sie.</p>
+                <div class="fm-checks">
+                  <label class="check"><input id="rotAbzUngeprueft" type="checkbox">Ungeprüft</label>
+                  <label class="check"><input id="rotAbzNurGesehen" type="checkbox">Nur gesehen</label>
+                  <label class="check"><input id="rotAbzUnterSchnitt" type="checkbox">Unter Schnitt</label>
+                  <!-- 28.09.2026: Ein Haken fuer beide Gewinn-Stufen. -->
+                  <label class="check"><input id="rotAbzGewinn" type="checkbox">Gewinn+ / ++</label>
+                  <label class="check"><input id="rotAbzUnterPreis" type="checkbox">Unter Preis</label>
+                  <label class="check"><input id="rotAbzHeiss" type="checkbox">Heiß</label>
+                  <label class="check"><input id="rotAbzRuhig" type="checkbox">Ruhig</label>
+                  <label class="check"><input id="rotAbzNeu" type="checkbox">Neu</label>
+                  <label class="check"><input id="rotAbzChem" type="checkbox">Chem</label>
+                </div>
+                <details class="mehr"><summary>Mehr erfahren</summary>
+                  <p class="help-text">Im Modus „Nur Filter fahren …“ gilt zusätzlich: Der Filter muss mindestens eines der angehakten Abzeichen wirklich tragen. So fährt der Bot zum Beispiel nur Filter mit „Unter Preis“.</p>
+                  <p class="help-text">Ohne einen einzigen Haken bleibt in diesem Modus nichts übrig. Die Anzeige sagt dir das dann klar.</p>
+                  <p class="help-text">Soll der Bot nur Filter mit sicher geprüftem Preis fahren, nimm die Haken bei „Ungeprüft“ und „Nur gesehen“ weg.</p>
+                  <p class="help-text">„Abkühlung“ steht absichtlich nicht dabei. Ein abgekühlter Filter rutscht nur nach hinten und wird nie ausgeworfen.</p>
+                </details>
+              </div>
+            </details>
+          </div>
+
+          <div class="block" id="auto-spieler-block">
+            <div class="block-head">
+              <h3>Spieler für Autopilot wählen</h3>
+            </div>
+            <div class="row">
+              <div class="grow">
+                <label for="autoPlayerName">Name</label>
+                <input id="autoPlayerName" type="text" autocomplete="off" spellcheck="false" placeholder="Name eintippen (z. B. Musiala, Saliba …)">
+              </div>
+              <div>
+                <label for="autoRating">Rating</label>
+                <input id="autoRating" type="number" min="1" max="99" step="1" placeholder="alle">
+              </div>
+            </div>
+            <div id="auto-suggestions" class="suggestions-box"></div>
+            <div id="auto-player-card" class="player-card-box" hidden>
+              <span id="auto-pc-portrait"></span>
+              <div class="who"><strong id="auto-pc-name"></strong><small id="auto-pc-version"></small></div>
+              <span class="rating" id="auto-pc-rating"></span>
+            </div>
+
+            <!-- Auto-Kalkulations-Box: zwei Wege zum Preis, der niedrigere gilt (Klasse "gilt").
+                 Betraege nur als Zahl - die Muenze setzt das Stylesheet. -->
+            <div id="auto-calc-box" class="auto-calc-box" hidden>
+              <div class="calc-row">
+                <span id="auto-market-label">Marktpreis</span>
+                <b id="auto-market-price" class="coin no-coin">–</b>
+              </div>
+              <div class="calc-row text-muted" id="auto-weg-abschlag">
+                <span id="auto-discount-label">Weg 1: − Abschlag</span>
+                <span id="auto-discount">–</span>
+              </div>
+              <div class="calc-row text-muted" id="auto-weg-gewinn">
+                <span id="auto-profit-label">Weg 2: − 5 % EA-Gebühr − Mindestgewinn</span>
+                <span id="auto-profit-path">–</span>
+              </div>
+              <div class="calc-row total">
+                <span class="ico ico-target">Maximaler Kaufpreis</span>
+                <b id="auto-target-price" class="target-highlight no-coin">–</b>
+              </div>
+              <p class="hint" id="auto-calc-note"></p>
+            </div>
+
+            <!-- Dieselben Werte wie Schritt 4 (budget/maxBuys) - popup.js spiegelt sie. -->
+            <div class="row end" style="margin-top: 12px;">
+              <div class="grow">
+                <label for="autoBudget">Budget (Coins)</label>
+                <input id="autoBudget" type="number" min="0" step="1" placeholder="leer = ohne Grenze">
+              </div>
+              <div class="grow">
+                <label for="autoMaxBuys">Max. Käufe</label>
+                <input id="autoMaxBuys" type="number" min="1" max="50" step="1">
+              </div>
+            </div>
+            <p class="hint">Gilt auch für Manuell (Schritt 4).</p>
+            <p class="hint" id="auto-settings"></p>
+
+            <label class="check" id="rotationModus-zeile" hidden><input id="rotationModus" type="checkbox">Mehrere Filter nacheinander</label>
+
+          </div>
+
+          <!-- Der Start-Knopf steht seit dem 28.09.2026 AUSSERHALB von
+               auto-spieler-block.
+
+               Vorher lag er darin - und renderAutoModus versteckt diesen
+               Block im Rotations-Modus (popup.js: auto-spieler-block.hidden
+               = rotation). Dazu kommt [hidden] { display: none !important }
+               in popup-design.css. Der einzige Knopf, der die Rotation
+               startet, war damit unsichtbar, sobald man auf "Mehrere Filter
+               nacheinander" umschaltete.
+
+               Der Fehler steckte seit Commit 542e854 drin. Damit war alles
+               unerreichbar, was seither an der Rotation gebaut wurde.
+
+               Hier draussen gilt er fuer beide Betriebsarten - genau wie der
+               Klick-Empfaenger, der schon immer beide kannte:
+               rotationModus.checked ? rotationLauf() : startAutoRun(). -->
+          <div class="aktionsleiste">
+            <button id="auto-start-btn" type="button" class="ico ico-bolt go auto-launch-btn btn-start" disabled>
+              Autopilot starten
+            </button>
+            <!-- Ladebalken und Grund fuer einen gesperrten Start stehen IN der
+                 klebenden Leiste (CSS schiebt sie per order ueber den Knopf).
+                 Vorher standen sie dahinter im Fluss: War die Seite lang,
+                 klebte die Leiste unten am Bildschirm, und der Grund lag
+                 ausserhalb des Bildes - wer den grauen Knopf antippte, sah
+                 nicht, warum er gesperrt war. -->
+            <div class="loader" id="auto-loader" role="status" aria-live="polite" hidden></div>
+            <p class="hint" id="auto-start-msg" aria-live="polite"></p>
+          </div>
+        </div>
+
+        <!-- Manueller Modus Panel -->
+        <div id="snipe-manual-panel" hidden>
+          <div class="page-intro"><span class="eyebrow">MANUELLE SUCHE</span><h2>Dein nächster Deal.</h2><p id="step-intro">Schritt für Schritt zum Lauf.</p></div>
+          <ol class="steps" id="step-bar" aria-label="Fortschritt">
+        <li data-step="1">Spieler</li><li data-step="2">Preis</li><li data-step="3">Zielpreis</li><li data-step="4">Budget</li><li data-step="5">Danach</li>
+      </ol>
+      <div class="block" data-step="1">
+        <div class="block-head">
+          <h3><span class="num">1</span>Spieler wählen</h3>
+          <button class="help-toggle" type="button" aria-expanded="false" aria-controls="help-player" aria-label="Erklärung: Spieler wählen">?</button>
+        </div>
+        <p class="help-text" id="help-player" hidden>Tippe den Namen ein. Wähle den Spieler aus der Liste. Das Rating legt die Version fest: Leer heißt jede Version dieses Spielers. Eine Zahl heißt nur die Version mit genau diesem Rating. Die Kartenart trennt Sonderkarten von der Normalversion (TOTW, Ikone, Hero …). Stelle sie in der EA-Suchmaske ein. Tippe dann hier auf „Kartenart aus der EA-Suche übernehmen“.</p>
+        <div class="row">
+          <div class="grow">
+            <label for="playerName">Name</label>
+            <input id="playerName" type="text" autocomplete="off" spellcheck="false" placeholder="Name eintippen">
+          </div>
+          <div>
+            <label for="rating">Rating</label>
+            <input id="rating" type="number" min="1" max="99" step="1" placeholder="alle">
+          </div>
+          <div>
+            <label for="rarity">Kartenart</label>
+            <!-- 28.09.2026: Textfeld statt Zahlenfeld. Mehrere Kartenarten
+                 gehen mit Komma ("12,70") in EINE Suche - wie FSTs Fenster
+                 "Edit Rarities" (scripts.js Z. 26628). -->
+            <input id="rarity" type="text" inputmode="numeric" pattern="[0-9]{1,3}(,[0-9]{1,3}){0,4}" placeholder="alle · mehrere mit Komma" title="Eine oder mehrere Kartenart-Nummern, mit Komma getrennt, z. B. 12,70">
+          </div>
+        </div>
+        <div id="rarity-wahl-zeile" hidden>
+          <label for="rarity-wahl">Kartenart wählen</label>
+          <select id="rarity-wahl"><option value="">Alle Kartenarten</option></select>
+        </div>
+        <div id="rarity-zeile" class="hint"></div>
+        <button id="rarity-uebernehmen" class="ghost" type="button" hidden>Kartenart aus der EA-Suche übernehmen</button>
+        <div id="suggestions"></div>
+        <div id="player-card" hidden>
+          <span id="pc-portrait"></span>
+          <div class="who"><strong id="pc-name"></strong><small id="pc-version"></small></div>
+          <span class="rating" id="pc-rating"></span>
+        </div>
+        <p class="hint" id="player-hint"></p>
+      </div>
+
+      <div class="block" data-step="2">
+        <div class="block-head">
+          <h3><span class="num">2</span>Preis prüfen</h3>
+          <button class="help-toggle" type="button" aria-expanded="false" aria-controls="help-price" aria-label="Erklärung: Preis prüfen">?</button>
+        </div>
+        <p class="help-text" id="help-price" hidden>Der Bot sammelt bis zu 30 verschiedene Angebote. Er erkennt die erste echte Preisgruppe. Einzelne ungewöhnliche Billig- oder Fantasiepreise ignoriert er. Jeder Check misst zweimal. Weichen beide Messungen um mehr als 5 % ab, ist die Sicherheit niedrig. Bei mittlerer Sicherheit wird der Zielpreis 2 % vorsichtiger, bei niedriger 5 %. Der Zielpreis rechnet die 5 % EA-Gebühr und deinen Mindestgewinn mit ein. Der Bot schaut auch, wie lange die Angebote schon stehen. Steht ein Angebot schon ein paar Minuten unverkauft, ist sein Preis zu hoch. Dann rechnet der Bot eine Stufe darunter. Wie streng das ist, stellst du unter Optionen → Preis-Methode ein. Der Check selbst kauft nichts.</p>
+        <button id="check" class="ico ico-search secondary" type="button" disabled>Preis prüfen</button>
+        <div class="loader" id="check-loader" role="status" aria-live="polite" hidden></div>
+        <p class="hint" id="check-msg" aria-live="polite"></p>
+        <div id="price" hidden>
+          <div class="price-line">
+            <div><span>Günstigstes Angebot</span><b id="p-lowest"></b></div>
+            <div><span>Marktpreis ca.</span><b id="p-market"></b></div>
+          </div>
+          <div id="p-spark-wrap" hidden>
+            <svg id="p-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><polyline id="p-line" points=""></polyline></svg>
+          </div>
+          <p class="hint" id="p-trend"></p>
+          <p class="hint" id="p-activity"></p>
+          <div class="sell-prices" aria-label="Empfohlene Verkaufspreise">
+            <div class="sell-price safe"><span>Schnell</span><b id="sell-safe"></b></div>
+            <div class="sell-price recommended"><span>Normal</span><b id="sell-recommended"></b></div>
+            <div class="sell-price lazy"><span>Geduldig</span><b id="sell-lazy"></b></div>
+          </div>
+          <p class="hint">Schnell verkauft meist rasch. Normal ist ausgewogen. Geduldig versucht mehr Gewinn, kann aber länger dauern.</p>
+          <p class="hint" id="p-alter"></p>
+          <p class="hint" id="p-ea"></p>
+          <p class="hint ok" id="p-profit"></p>
+          <p class="hint warn" id="p-hint"></p>
+          <p class="hint" id="p-run"></p>
+          <p class="hint" id="p-age"></p>
+          <button id="p-apply" class="secondary" type="button"></button>
+        </div>
+      </div>
+
+      <div class="block" data-step="3">
+        <div class="block-head">
+          <h3><span class="num">3</span>Zielpreis und Liste</h3>
+          <button class="help-toggle" type="button" aria-expanded="false" aria-controls="help-targets" aria-label="Erklärung: Zielpreis und Liste">?</button>
+        </div>
+        <p class="help-text" id="help-targets" hidden>Der Bot kauft nur Angebote, deren Sofortkaufpreis nicht über dem Zielpreis liegt. Mit „Zur Liste“ sammelst du bis zu 10 Spieler. Der Bot sucht sie abwechselnd. Ist die Liste leer, nimmt der Lauf den Spieler aus Schritt 1.</p>
+        <div class="row end">
+          <div class="grow"><label for="maxPrice">Zielpreis (Coins)</label><input id="maxPrice" type="number" min="0" step="50"></div>
+          <div><button id="add-target" class="ico ico-plus secondary inline" type="button" disabled>Zur Liste</button></div>
+        </div>
+        <div id="targets"></div>
+        <p class="hint" id="targets-hint" aria-live="polite"></p>
+        <details class="settings-group" id="collections">
+          <summary>Sammlungen<small>Listen speichern und wiederverwenden</small></summary>
+          <div class="settings-content">
+            <p class="hint">Eine Sammlung merkt sich Spieler und Zielpreise. Die Preise werden mit der Zeit alt. Der Start prüft höchstens 3 alte Preise selbst nach. Sind es mehr, prüfe sie vorher einzeln: Klicke in der Liste auf „Preis prüfen“.</p>
+            <div class="row end">
+              <div class="grow"><label for="collection-pick">Gespeicherte Sammlung</label>
+                <select id="collection-pick"><option value="">— keine —</option></select></div>
+              <div><button id="collection-load" class="secondary inline" type="button" disabled>Nur Spieler</button></div>
+              <div><button id="collection-load-all" class="secondary inline" type="button" disabled>Spieler + Einstellungen</button></div>
+            </div>
+            <!-- Zwei Knoepfe statt einem (25.09.2026): Wer nur die Liste will,
+                 soll nicht ungefragt seine Handelsart umgestellt bekommen. -->
+            <p class="hint">„Sichern“ speichert auch deine Einstellungen. „Nur Spieler“ lädt nur die Liste.</p>
+            <details class="mehr"><summary>Mehr erfahren</summary>
+              <p class="hint">Mit gesichert werden: Tempo, Pausen, Budget, Max. Käufe, Laufzeit, Gewinnregel, Filter-Grenzen, Rotation, Töne und „Nach dem Kauf“. Das geht seit dem 25.09.2026.</p>
+              <p class="hint">Beim Laden prüft der Bot jede Zahl noch einmal gegen den erlaubten Bereich. Ist sie zu klein oder zu groß, hebt oder kappt er sie. Das meldet er dir.</p>
+            </details>
+            <div class="row end">
+              <div class="grow"><label for="collection-name">Aktuelle Liste sichern als</label>
+                <input id="collection-name" type="text" maxlength="40" spellcheck="false" placeholder="z. B. Bundesliga-Gold"></div>
+              <div><button id="collection-save" class="secondary inline" type="button">Sichern</button></div>
+            </div>
+            <button id="collection-delete" class="secondary" type="button" disabled>Ausgewählte Sammlung löschen</button>
+            <p class="hint" id="collection-msg" aria-live="polite"></p>
+          </div>
+        </details>
+      </div>
+
+      <div class="block" data-step="4">
+        <div class="block-head">
+          <h3><span class="num">4</span>Budget und Limit</h3>
+          <button class="help-toggle" type="button" aria-expanded="false" aria-controls="help-budget" aria-label="Erklärung: Budget und Limit">?</button>
+        </div>
+        <p class="help-text" id="help-budget" hidden>Das Budget ist das Maximum, das ein Lauf ausgibt. Max. Käufe begrenzt, wie viele Spieler er pro Lauf kauft. Lässt du Max. Käufe leer, gibt es keine eigene Kaufgrenze. <span data-modus="streng">Dann stoppt der Lauf durch Budget, Laufzeit, die Grenzen je Spieler oder das Tageslimit von 100 Kaufversuchen.</span><span data-modus="fst" hidden>Dann stoppt der Lauf durch Budget, Laufzeit (höchstens 300 Minuten) oder die Grenzen je Spieler, die du selbst einträgst.</span> Was zuerst erreicht ist, stoppt den Bot. Jeder Spieler hat zusätzlich eigene Grenzen. Du findest sie im Start-Dialog unter „Grenzen je Spieler“. <span data-modus="streng">Normal sind 3 Käufe und 100 Suchen.</span><span data-modus="fst" hidden>Ohne eigene Grenzen sind diese Felder leer, und leer heißt: keine Grenze.</span> Budget und Max. Käufe gelten auch für den Autopilot. Der setzt das Limit je Spieler auf Max. Käufe. Dann geht es mit „Weiter“ zu Schritt 5. Dort wählst du „Sniping vorbereiten“.</p>
+        <!-- Budget: Auto oder Eigene (28.09.2026). Auto heisst wie bei
+             FUT Simple Trader: das ganze Guthaben (scripts.js Z. 41937:
+             max_coins_to_trade = Kontostand), und der Satz darunter nennt die
+             echte Zahl (Z. 40155: "balance" wird in den Text eingesetzt).
+             Die Logik (renderBudgetMode in popup.js) war seit dem 27.09.
+             fertig - aber diese drei Elemente fehlten in der Seite. Ein
+             Schalter ohne Knopf tut nichts. Das CSS (.budget-mode-head) lag
+             auch schon bereit. -->
+        <!-- Aufbau wie FSTs Zeile der Feinabstimmung (.setrow): Karte mit Titel links,
+             Auto/Eigene rechts und der Hilfezeile mit Blitz darunter. -->
+        <div class="budget-tune">
+          <div class="budget-mode-head"><b>Budget</b><span class="segmented" id="budget-mode"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
+          <p class="tune-auto" id="budget-auto-text" hidden></p>
+        </div>
+        <div class="row">
+          <!-- Leer = ohne Grenze, nur der Kontostand bremst (28.09.2026,
+               wie FST: dort gibt es im Snipe-Modus gar kein Budget). Der
+               Standard bleibt 5.000 - leer wird es nur, wenn der Nutzer
+               das Feld selbst leert. "Auto" (siehe Schalter darueber) setzt
+               stattdessen das ganze Guthaben. -->
+          <div id="budget-feld"><label for="budget">Budget (Coins)</label><input id="budget" type="number" min="0" step="1" placeholder="leer = ohne Grenze"></div>
+          <!-- Leer = ohne eigene Grenze (27.09.2026, Punkt 12 der FST-Liste).
+               Dann stoppt nur noch Budget, Laufzeit oder das Tageslimit. -->
+          <div><label for="maxBuys">Max. Käufe</label><input id="maxBuys" type="number" min="1" max="50" step="1" placeholder="leer = ohne Grenze"></div>
+        </div>
+      </div>
+      <div class="block" data-step="5" hidden>
+        <div class="block-head">
+          <h3><span class="num">5</span>Nach dem Kauf</h3>
+          <button class="help-toggle" type="button" aria-expanded="false" aria-controls="help-after" aria-label="Erklärung: Nach dem Kauf">?</button>
+        </div>
+        <p class="help-text" id="help-after" hidden>Hier legst du fest, wohin ein gekaufter Spieler kommt. Zum Weiterverkaufen: auf die Transferliste. In den Verein: nur, wenn du ihn behalten willst. „Gleich verkaufen“ stellt den Spieler nach dem Kauf selbst ein. Die Laufzeit ist eine Stunde. Das Startgebot liegt eine Stufe unter dem Sofortkauf. Den Preis nimmt der Bot in dieser Reihenfolge: Erstens der Festpreis aus den Optionen. Er veraltet nie. Zweitens der letzte Preis-Check, höchstens 60 Minuten alt. Drittens der Marktpreis, den der Bot im Lauf selbst gemessen hat. Gibt es keinen davon, oder bliebe kein Gewinn, stellt er nichts ein. Der Spieler landet dann nur auf der Transferliste.</p>
+        <div class="choice">
+          <label class="check"><input type="radio" name="afterBuy" value="transfer"><span><b>Auf die Transferliste</b><small>Zum Weiterverkaufen. Dort stellst du ihn selbst ein.</small></span></label>
+          <label class="check"><input type="radio" name="afterBuy" value="club"><span><b>In den Verein</b><small>Zum Behalten. Hast du den Spieler schon, lehnt EA das ab. Er bleibt dann bei den Transferzielen.</small></span></label>
+          <label class="check"><input type="radio" name="afterBuy" value="list"><span><b>Gleich verkaufen</b><small>Der Bot stellt den Spieler sofort für eine Stunde ein. Den Preis nimmt er aus den Optionen (Festpreis), sonst aus einer Messung. Nur wenn nach 5 % EA-Gebühr Gewinn bleibt.</small></span></label>
+          <label class="check"><input type="radio" name="afterBuy" value="keep" checked><span><b>Liegen lassen</b><small>Bleibt bei den Transferzielen. Nichts wird verschoben.</small></span></label>
+        </div>
+        <p class="hint">Das Verschieben nutzt eine EA-Funktion („Endpunkt“), die noch nicht live geprüft ist. Klappt es nicht, bleibt der Spieler bei den Transferzielen.</p>
+        <p class="hint">Verkaufen geht auch von Hand im Reiter <b>Käufe → Verkaufen</b>: Preis prüfen, dann mit einem Klick einstellen.</p>
+      </div>
+      <div class="step-nav aktionsleiste">
+        <!-- Der Grund, warum "Weiter" gesperrt ist, steht IN der klebenden
+             Leiste (vorher davor im Fluss, ausserhalb des Bildes). -->
+        <p class="hint" id="step-block" aria-live="polite"></p>
+        <button id="step-back" class="secondary inline" type="button">Zurück</button>
+        <button id="step-next" class="go ico ico-arrow" type="button">Weiter</button>
+      </div>
+        </div> <!-- #snipe-manual-panel -->
+      </div> <!-- #snipe-config-container -->
+    </section>
+
+    <!-- ========================== Live Filter ========================== -->
+    <section id="view-filters" role="tabpanel" aria-labelledby="tab-filters" hidden>
+      <div class="page-intro"><span class="eyebrow">MARKT ENTDECKEN</span><h2>Live-Filter</h2><p>Aktuelle Chancen passend zu deinem Budget.</p></div>
+      <div class="block lf-block">
+        <!-- Die zwei langen Erklaerungen stehen eingeklappt (FST zeigt sie in
+             einem Hilfe-Fenster). Der Text ist unveraendert. -->
+        <details class="lf-erklaerung">
+          <summary><span class="lf-info-card__title">So liest du die Liste</span><small class="lf-info-card__sub">Wertung, Abzeichen, Abkühlung</small></summary>
+        <p class="hint">Das sind frische Filter aus dem EA-Transfermarkt. Die Wertung (0 bis 10) zeigt, wie gut ein Filter gerade aussieht. Sie verbindet den Abstand deines Kaufpreises zum billigsten Angebot mit Gewinn, Preis-Sicherheit und Frische. Sie ist eine Einschätzung, keine gemessene Trefferchance. Mit eigenen Läufen wird sie genauer. Ein einzelnes billiges Angebot zählt wenig. Es ist meist schnell weg. Genau eine Zeile wird markiert: die beste ohne Abkühlung. Ab Wertung 4,0 heißt sie „Für dich“. Darunter heißt sie nur „Beste dieser Liste“. Dann ist sie die beste von schwachen Filtern und kein Rat. Ein Filter, der gerade lief, kühlt ab. Seine Wertung sinkt sichtbar, bis fünf andere Filter dran waren. Die Marktaktivität zählt nur, wenn sie wirklich gemessen ist. Der Scanner kauft dabei nichts.</p>
+        <!-- 27.09.2026: Das neue Abzeichen "Chem" haengt an einem Feld, das EA
+             mitschicken muss (itemData.playStyle). Wir behaupten nichts, wenn
+             es fehlt - also muss hier stehen, dass das Fehlen auch am Feld
+             liegen kann. Sonst liest der Nutzer "keine Karte hat Chemie". -->
+        <p class="hint">Das Abzeichen „Chem“ steht für Karten mit aufgesetztem Chemie-Stil (PlayStyle+). Sie sind ein eigener Markt und meist teurer. Der Bot vergleicht ihren Preis nur mit Angeboten desselben Stils. Das Abzeichen erscheint nur, wenn EA den Chemie-Stil am Angebot mitschickt. Siehst du es nie, obwohl es solche Karten gibt, schickt EA das Feld nicht.</p>
+        </details>
+        <button id="scan-market" class="ico ico-radar secondary lf-scan" type="button">EA-Markt live scannen</button>
+        <div class="loader" id="scan-loader" role="status" aria-live="polite" hidden></div>
+        <p class="hint" id="market-scan-msg" aria-live="polite"></p>
+        <p class="hint" id="usage-hint"></p>
+        <!-- 28.09.2026: Sagt, ob EA die Chemie (PlayStyle+) mitschickt.
+             Ohne diese Zeile bliebe fuer immer unklar, warum das Abzeichen
+             "Chem" nie erscheint. Gerechnet wird nur mit gespeicherten
+             Preis-Messungen - keine einzige EA-Anfrage. -->
+        <p class="hint" id="chem-sicht"></p>
+        <details id="scan-filter-block" hidden>
+          <summary>Suche eingrenzen <span id="scan-filter-anzahl" class="hint"></span></summary>
+          <p class="help-text">EA liefert pro Suche nur 21 Angebote. Je enger du suchst, desto mehr brauchbare Karten sind dabei. Die Listen stammen aus deiner EA-Suchmaske.</p>
+          <div class="row"><div class="grow">
+            <label for="scanf-rarity">Kartenart</label>
+            <select id="scanf-rarity"><option value="">Alle</option></select>
+          </div></div>
+          <div class="row"><div class="grow">
+            <label for="scanf-level">Qualität</label>
+            <select id="scanf-level"><option value="">Alle</option></select>
+          </div></div>
+          <div class="row"><div class="grow">
+            <label for="scanf-position">Position</label>
+            <select id="scanf-position"><option value="">Alle</option></select>
+          </div></div>
+          <div class="row"><div class="grow">
+            <label for="scanf-league">Liga</label>
+            <select id="scanf-league"><option value="">Alle</option></select>
+          </div></div>
+          <div class="row"><div class="grow">
+            <label for="scanf-nation">Nation</label>
+            <select id="scanf-nation"><option value="">Alle</option></select>
+          </div></div>
+          <div class="row"><div class="grow">
+            <label for="scanf-playStyle">Chemie-Stil</label>
+            <select id="scanf-playStyle"><option value="">Alle</option></select>
+          </div></div>
+          <div class="row"><div class="grow">
+            <label for="scanf-club">Verein</label>
+            <select id="scanf-club"><option value="">Alle</option></select>
+            <p class="hint">Neu und noch nicht live geprüft: Wir wissen nicht sicher, wie der Verein in EAs Suchadresse heißt. Bleiben die Ergebnisse nach dem Einstellen bunt gemischt, kennt EA den Namen nicht.</p>
+          </div></div>
+          <button id="scan-filter-leeren" class="ghost" type="button">Alle Eingrenzungen zurücksetzen</button>
+        </details>
+        <!-- Listenkopf wie bei FST: Zaehler, Budget-Reiter, Spaltenkoepfe, Zeilen. -->
+        <div class="lf-list-head"><span class="lf-list-head__count" id="filter-count"><b>0</b> verfügbar</span></div>
+        <div class="lf-list-controls">
+          <div class="filter-tools form-toggle-multiple--budget" id="filter-budget" role="group" aria-label="Budget-Stufe">
+            <button type="button" data-budget="all" class="active">Gesamt</button>
+            <button type="button" data-budget="low">Niedrig</button>
+            <button type="button" data-budget="mid">Mittel</button>
+            <button type="button" data-budget="high">Hoch</button>
+          </div>
+        </div>
+        <div class="filter-columns lf-col-header"><span class="player-col lf-col-header__player">Spieler</span><span class="number-col lf-col-header__price">Preis</span><span class="number-col lf-col-header__score">Wertung</span></div>
+        <div id="filter-list"></div>
+        <!-- Platzhalter-Zeilen, solange der Scan laeuft (FST: lf-skeleton). -->
+        <div class="lf-skeleton-liste" id="filter-skeleton" aria-hidden="true" hidden>
+          <div class="check-group lf-skeleton"><div class="check-group__content"></div></div>
+          <div class="check-group lf-skeleton"><div class="check-group__content"></div></div>
+          <div class="check-group lf-skeleton"><div class="check-group__content"></div></div>
+          <div class="check-group lf-skeleton"><div class="check-group__content"></div></div>
+        </div>
+        <div class="empty-state" id="filter-empty-box" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M8 11h6"/></svg>
+          <b>Noch keine Live-Filter</b>
+          <p id="filter-empty"></p>
+        </div>
+      </div>
+      <!-- Fussleiste wie FSTs Seiten-Fuss: klebt unten, breiter Cyan-Knopf. -->
+      <div class="lf-fuss"><button id="load-filter" class="secondary" type="button" disabled>Filter aktivieren</button></div>
+    </section>
+
+    <!-- ============================ Käufe ============================ -->
+    <section id="view-buys" role="tabpanel" aria-labelledby="tab-buys" hidden>
+      <div class="page-intro"><span class="eyebrow">DEINE AKTIVITÄT</span><h2>Käufe im Überblick</h2><p>Deine Ergebnisse und Exporte an einem Ort.</p></div>
+      <div class="block">
+        <div class="block-head"><h3 class="ico ico-activity">Dieser Lauf</h3></div>
+        <div class="minor">
+          <span title="Anzahl Suchen auf dem Transfermarkt"><b id="s-scans">0</b>Scans</span>
+          <span id="s-bids-box" title="Abgegebene Gebote; ein Gebot ist noch kein gewonnener Spieler"><b id="s-bids">0</b>Gebote</span>
+          <span id="s-bound-box" title="Coins in noch offenen Geboten. Reserviert, nicht ausgegeben – sie werden wieder frei, sobald ein Gebot verloren geht."><b id="s-bound">0</b>Gebunden</span>
+          <span title="Angebote, die jemand anderes schneller gekauft hat"><b id="s-missed">0</b>Verpasst</span>
+          <span title="Fehlgeschlagene Anfragen. Nach 5 in Folge stoppt der Bot."><b id="s-errors">0</b>Fehler</span>
+        </div>
+        <p class="hint" id="s-verkauft-zeile" title="Karten, die seit dem Start dieses Laufs als verkauft erkannt wurden. Der Gewinn ist der Verkaufspreis minus 5 % EA-Gebühr minus Kaufpreis."></p>
+      </div>
+      <div class="block" id="verkauf-block">
+        <div class="block-head">
+          <h3 class="ico ico-coins">Verkaufen</h3>
+          <button class="help-toggle" type="button" aria-expanded="false" aria-controls="help-verkauf" aria-label="Erklärung: Verkaufen">?</button>
+        </div>
+        <p class="help-text" id="help-verkauf" hidden>Hier siehst du deine Transferliste aus der Web App. Lesen kostet keine EA-Anfrage. „Preis prüfen“ kostet bis zu 15 Suchen. „Einstellen“ stellt den Spieler für eine Stunde zum Normalpreis ein. Das Startgebot liegt eine Stufe darunter. Der Bot stellt nie von selbst ein, nur auf deinen Klick. Beim Abräumen merkt er sich den echten Verkaufspreis.</p>
+        <p class="hint" id="verkauf-summe">Öffne diesen Reiter, dann liest der Bot deine Transferliste.</p>
+        <div class="verkauf-knoepfe">
+          <button id="verkauf-lesen" class="secondary ico ico-refresh" type="button" title="Lädt die Transferliste neu von EA – eine Anfrage, wie beim Öffnen der Transferliste in der App.">Aktualisieren</button>
+          <button id="verkauf-neu" class="secondary" type="button" disabled>Abgelaufene neu einstellen</button>
+          <button id="verkauf-abraeumen" class="secondary" type="button" disabled>Verkaufte abräumen</button>
+        </div>
+        <p class="hint" id="verkauf-meldung" aria-live="polite"></p>
+        <div id="verkauf-liste"></div>
+        <p class="hint" id="verkauf-echt"></p>
+      </div>
+      <div class="block">
+        <div class="block-head"><h3 class="ico ico-bag">Alle Käufe</h3></div>
+        <p class="hint" id="buys-summary"></p>
+        <div id="buys-list"></div>
+        <button id="export-buys" class="ico ico-download secondary" type="button">Käufe als CSV exportieren</button>
+        <button id="export-prices" class="ico ico-download secondary" type="button">Preisverlauf als CSV exportieren</button>
+        <p class="hint">Die CSV-Dateien öffnen sich direkt in Excel. Alle Daten bleiben lokal in deinem Browser.</p>
+      </div>
+    </section>
+
+    <!-- ========================= Einstellungen ========================= -->
+    <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <div class="page-intro"><span class="eyebrow">DEINE EINSTELLUNGEN</span><h2>So handelst du.</h2><p>Einstellungen werden automatisch gespeichert.</p></div>
+      <!-- FST-Modus (01.10.2026): Ein Haken, der alle eigenen Grenzen des Bots
+           ausschaltet. Der Haken ist ab Werk an. Aus = der strenge Modus von
+           frueher, unveraendert. Wahrheit ist, was der Motor benutzt
+           (status().fstModus), nicht dieser Haken. -->
+      <details class="settings-group" id="fst-modus" open><summary>Grenzen<small>Ohne eigene Grenzen oder streng</small></summary><div class="settings-content">
+        <label class="check"><input id="fstModus" type="checkbox">Ohne eigene Grenzen</label>
+        <p class="hint">Wenn der Haken an ist, hat der Bot keine eigenen Grenzen mehr. Es gibt kein Limit für Suchen und Käufe pro Stunde oder pro Tag. Nach einer Warnung von EA gibt es keine Wartezeit. Du kannst sofort neu starten. So arbeiten auch andere Snipe-Programme. Was trotzdem bleibt, steht unter „Mehr erfahren“. Ist der Haken aus, gelten alle strengen Grenzen wie bisher.</p>
+        <p class="hint warn" id="fst-aus-hinweis" hidden>Haken aus: Deine gespeicherten Zähler und Werte bleiben (Budget, Nach dem Kauf, Gewinn-Bremse). Prüfe sie. Die Pausen-Stufe geht zurück auf „Ausgewogen“.</p>
+        <p class="hint warn" id="fst-lauf-hinweis" hidden>Ein Lauf läuft gerade. Er arbeitet mit dem Modus, mit dem er gestartet wurde. Die Umstellung gilt erst ab dem nächsten Lauf.</p>
+        <p class="hint warn">Risiko: EA kann dein Konto sperren, und der Bot bremst dich dann nicht mehr. Am 21.09. hat EA dieses Konto bei etwa 450 Suchen am Tag gesperrt, und nach zwei Käufen in einer Sekunde kam eine Warnung. Der Weg zurück: Haken aus.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Das entfällt mit dem Haken: die Limits für Suchen, Kaufversuche und Aktionen (pro Stunde und pro Tag), der Deckel über allem, das Limit von 20 je Karte, die Warnschwellen, die Ausnahme vom Tageslimit, die Startsperre nach einer Warnung von EA (426, 429, 458, 461, 512, 521 und andere), die wachsende Sperre, die Pause nach einer unklaren Antwort, der Zwang auf nur einen Tab, der Mindestabstand von 8 Sekunden zwischen Kaufanfragen, der Stopp nach 3 Fehlern in Folge, die 2 Minuten für denselben Filter und die Höchstzahl von 12 Filtern.</p>
+          <p class="hint">Das bleibt: Not-Aus mit Strg + Umschalt + P, der Stopp beim Wechsel des Tabs, die Platz-Prüfung (Transferliste voll mit 100 Karten, „Nicht zugewiesen“ mit mehr als 4 Karten, mit dem Haken „Weiterkaufen“ mehr als 99), jeder Fehlercode von EA bei einer Suche (das beendet den Lauf; bei Kauf und Gebot stoppt nur der Code „Ziel voll“, 473), 10 Netzfehler in Folge („Keine Verbindung zu EA“), das Zeitlimit von höchstens 300 Minuten, ein Budget, das kleiner ist als der höchste Zielpreis, Zielpreis, Kartenart und Chemie müssen zur Karte passen, die Rotation endet, wenn EA einen Markt-Scan abweist oder die Laufzeit zu Ende ist (höchstens 300 Minuten), ein Kontostand, der für keinen Zielpreis reicht, mehr als 10 Spieler in der Liste, keine Verbindung zur Web App, der Haken „Gewinn-Bremse“, der Stopp bei zu vielen Treffern, der Verlustschutz beim Einstellen (Mindestpreis 200), die Pausen zwischen den Suchen, genau ein Kaufversuch je Suche und 5 bis 6,5 Sekunden Ruhe nach einem Kauf. Ein Kauf ohne klare Antwort stoppt den Lauf nicht mehr: Der Bot meldet ihn und macht weiter. Ein abgelaufener Live-Filter und ein Fehler beim Lesen der Transferliste sind nur noch eine Warnung.</p>
+          <p class="hint">Beim ersten Öffnen nach dem Update setzt der Bot einmal die alten Standardwerte auf die von anderen Snipe-Programmen (zum Beispiel Budget und Max. Käufe leer, Pausen „Wie FST“, Laufzeit 60 Minuten, „Nach dem Kauf“ auf Transferliste). Eigene Zahlen bleiben, wie sie sind.</p>
+        </details>
+      </div></details>
+      <details class="settings-group" open><summary>Preis & Gewinn<small>Preisvorschläge und Mindestgewinn</small></summary><div class="settings-content">
+        <label for="discount">Abschlag für den Vorschlag (%)</label>
+        <input id="discount" type="number" min="1" max="50" step="1">
+        <p class="hint">So weit unter dem Marktpreis schlägt der Preis-Check deinen Zielpreis vor.</p>
+
+        <label for="preisStufen">Verkaufspreis verschieben (Preisstufen)</label>
+        <input id="preisStufen" type="number" min="-30" max="30" step="1">
+        <p class="hint">Verschiebt den erwarteten Verkaufspreis um ganze Preisstufen. Minus: tiefer. Plus: höher. 0: nicht verschieben. Eine Preisstufe ist ein Schritt auf EAs Preisleiter, genauer als Prozent: Bei einer 400-Coin-Karte sind es genau 50 Coins. Der Kaufpreis steigt dadurch nie über den gemessenen Marktpreis.</p>
+
+        <label for="preisMethode">Preis-Methode</label>
+        <select id="preisMethode">
+          <option value="sicher">Sicher – schnell verkaufen</option>
+          <option value="empfohlen">Empfohlen – ausgewogen</option>
+          <option value="locker">Locker – mehr Geduld</option>
+        </select>
+        <p class="hint">Der Bot schaut beim Preis-Check, wie lange Angebote schon unverkauft stehen, ohne zusätzliche Suche. Der Verkaufspreis sinkt dadurch höchstens um rund 10 %. Er steigt nie.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Wann ein Preis als zu hoch gilt: Empfohlen: Steht ein Angebot 2 Minuten oder gibt es mehr als 15 bis zu einem Preis, ist dieser Preis zu hoch. Sicher: schon ab 3 Angeboten. Locker: erst ab 30 Minuten oder mehr als 20 Angeboten.</p>
+        </details>
+
+        <!-- Preisdeckel wie FST (28.09.2026). Standard AUS: Die Markt-Bremse
+             war eine bewusste Entscheidung gegen FSTs Verhalten. Der Haken
+             ist der Weg zu FSTs Weg, ohne den sicheren Standard zu opfern. -->
+        <label class="check"><input id="deckelFst" type="checkbox">Preisdeckel wie FUT Simple Trader (Markt-Bremse aus)</label>
+        <p class="hint">Ohne Haken bremst der Bot den Verkaufspreis: Er darf nur begrenzt über dem gemessenen Marktpreis liegen. Mit Haken zählt allein das billigste Angebot, das schon 5 Minuten steht. Dann kann die Karte lange liegen bleiben. Der Kaufpreis steigt durch den Haken nie.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Begrenzt heißt gestaffelt: Billige Karten bis 60 %, sehr teure 15 % über dem gemessenen Marktpreis.</p>
+          <p class="hint">Beispiel: Der Marktpreis ist 20.000. Alle Angebote liegen ab 40.000. Ohne Haken stellt der Bot für höchstens 26.000 ein. Mit Haken stellt er für 39.750 ein. Die Regel mit Haken ist dieselbe wie bei FUT Simple Trader.</p>
+        </details>
+
+        <label class="check"><input id="smartProfit" type="checkbox">Auto-Gewinn verwenden</label>
+        <label for="minProfit">Mindestgewinn pro Karte (Coins)</label>
+        <input id="minProfit" type="number" min="0" max="10000000" step="50">
+        <p class="hint">Auto-Gewinn passt den Mindestgewinn an Preis und Marktaktivität an. Dein eigener Wert gilt nur, wenn Auto-Gewinn aus ist. Die 5 % EA-Gebühr zieht der Bot immer zusätzlich ab.</p>
+
+      </div></details>
+      <details class="settings-group"><summary>Allgemein<small>Benachrichtigungen, Live-Filter, Start-Prüfung</small></summary><div class="settings-content">
+        <label class="check"><input id="notify" type="checkbox">Benachrichtigungen bei Kauf und Stopp</label>
+        <label class="check haken"><input id="autoFilters" type="checkbox">Live-Filter automatisch alle 7 Minuten erneuern</label>
+        <label class="check"><input id="autoCheckOnStart" type="checkbox">Beim Start Preise prüfen, wenn sie älter als 15 Minuten sind</label>
+        <p class="hint">Der Lauf startet erst nach der Prüfung. Ist der Markt inzwischen gefallen, sagt der Bot es dir und startet nicht. Dein Zielpreis ändert sich nie stillschweigend. Höchstens 3 Spieler auf einmal, sonst kostet es zu viele EA-Anfragen.</p>
+        <label class="check"><input id="stopIfTooBroad" type="checkbox">Spieler überspringen, wenn der Zielpreis über dem Markt liegt</label>
+        <p class="hint">Kommen zweimal hintereinander volle Trefferseiten zurück, gibt es reichlich Angebote zu deinem Zielpreis. Dann ist der Zielpreis kein Schnäppchenpreis, sondern der Marktpreis. Der Bot würde ohne Gewinn kaufen.</p>
+        <!-- Punkt 11 der FST-Liste (27.09.2026). Diese Bremse hat FST nicht.
+             Standardmäßig an - sie schützt vor Verlust. -->
+        <label class="check"><input id="gewinnBremse" type="checkbox">Spieler stoppen, wenn der Markt keinen Gewinn mehr hergibt</label>
+        <p class="hint">Der Bot rechnet nach jeder Suche nach. Bleibt nach den 5 % EA-Gebühr kein Gewinn, hört er bei diesem Spieler auf. Ohne Haken kauft er in dieser Lage weiter, auch mit Verlust.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Dafür steht der Bot ohne Haken nicht still, wenn sich der Markt nur kurz verzieht.</p>
+          <p class="hint">Der Bot vergleicht: Was bleibt vom Marktpreis nach den 5 % EA-Gebühr? Und was kostet das billigste passende Angebot? FUT Simple Trader prüft das vor dem Kauf nicht und kauft in dieser Lage mit Verlust weiter.</p>
+        </details>
+        <!-- Standardmäßig an, auf ausdrücklichen Wunsch (25.09.2026). Der Haken
+             ist der Weg zurück, falls EA wieder sperrt - siehe executeBuy. -->
+        <label class="check"><input id="sofortKaufen" type="checkbox">Sofort kaufen, ohne kurze Denkpause (schneller, fällt EA aber eher auf)</label>
+        <p class="hint" data-modus="fst" hidden>Ohne Denkpause ist der Bot am Schnäppchen schneller. Nach einem Kauf wartet der Bot 5 bis 6,5 Sekunden, wie FUT Simple Trader. Am 22.09. kam bei zwei Käufen pro Sekunde eine EA-Sperre. Ohne eigene Grenzen gibt es genau einen Kaufversuch je Suche.</p>
+        <p class="hint" data-modus="streng">Ohne Denkpause ist der Bot am Schnäppchen schneller. Am 22.09. kam bei zwei Käufen pro Sekunde eine EA-Sperre: erst 1 Stunde, dann 6, dann 24. Der Mindestabstand von 8 Sekunden zwischen zwei Kaufanfragen gilt immer.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Mit Denkpause wartet der Bot 0,2 bis 0,35 Sekunden, bevor er zugreift. Dann sieht ein Kauf aus wie ein Klick und nicht wie eine Maschine.</p>
+        </details>
+        <!-- Punkt 10 der FST-Liste. Seit 28.09.2026 wie FST auch nach einem
+             FEHLVERSUCH: FST sucht nach jedem Kaufversuch neu, egal ob er
+             geklappt hat (scripts.js 58276, 58306-58332). Standardmäßig an. -->
+        <label class="check"><input id="nachKaufNeuSuchen" type="checkbox">Nach jedem Kaufversuch neu suchen, statt aus derselben Liste weiterzukaufen</label>
+        <p class="hint" data-modus="streng">Das zweite Angebot aus einer 10 Sekunden alten Trefferliste ist meistens schon weg. Der Kaufversuch zählt trotzdem aufs Tageslimit.</p>
+        <p class="hint" data-modus="fst" hidden>Das zweite Angebot aus einer 10 Sekunden alten Trefferliste ist meistens schon weg. Ohne eigene Grenzen gibt es genau einen Kaufversuch je Suche, danach sucht der Bot neu.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">So macht es auch FUT Simple Trader – selbst nach einem Kauf, der danebenging, weil jemand schneller war. Ohne Haken bleibt es beim bisherigen Weg: weitere Käufe aus derselben Liste, solange sie jünger als 15 Sekunden ist.</p>
+        </details>
+        <!-- 28.09.2026: FSTs bezahlte Funktion "unlimited unassigned"
+             (scripts.js Z. 58493-58495, 58590, 58809, 58817). FSTs eigener
+             Standard ist ebenfalls AUS. -->
+        <label class="check"><input id="nichtZugewiesenUnbegrenzt" type="checkbox">Weiterkaufen, auch wenn „Nicht zugewiesen“ voll ist (bis 99 Karten)</label>
+        <p class="hint" data-modus="fst" hidden>Normalerweise stoppt der Bot, sobald mehr als 4 Karten in „Nicht zugewiesen“ liegen. Mit dem Haken macht er weiter, bis dort mehr als 99 Karten liegen.</p>
+        <p class="hint" data-modus="streng">Normalerweise stoppt der Bot, sobald mehr als 4 Karten in „Nicht zugewiesen“ liegen. Mit dem Haken macht er weiter, bis dort mehr als 99 Karten liegen. Alle Schutzlimits für Suchen und Käufe gelten unverändert.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Nach Päckchen oder Belohnungen liegen dort ganz normal Karten. Genau so macht es FUT Simple Trader mit seiner bezahlten Funktion – und schaltet sie bei bezahltem Zugang sogar selbst ein. Wir lassen sie bewusst aus, bis du den Haken setzt.</p>
+          <p class="hint">Es geht dafür keine zusätzliche Anfrage an EA hinaus. Der Bot leert nur die Merkliste der Web App. Nach dem Stopp setzt er sie zurück, damit die App wieder den echten Stand zeigt.</p>
+        </details>
+        <label class="check haken"><input id="appSuchweg" type="checkbox">Suchen und Kaufen über die EA-App (neu, im Test)</label>
+        <p class="hint" data-modus="streng">Der Bot nutzt dann Suche und Kauf der Web App selbst, statt EA direkt zu fragen. Das ist wie ein Klick in der App. Alle Schutzlimits gelten genauso. Noch nicht live geprüft: Schalte es erst nach dem ersten Test dauerhaft ein.</p>
+        <p class="hint" data-modus="fst" hidden>Der Bot nutzt dann Suche und Kauf der Web App selbst, statt EA direkt zu fragen. Das ist wie ein Klick in der App. Ohne eigene Grenzen gelten nur die Stopp-Regeln aus „Grenzen“. Noch nicht live geprüft: Schalte es erst nach dem ersten Test dauerhaft ein.</p>
+        <label class="check"><input id="appNurSuchseite" type="checkbox">Nur mit offener EA-Suchseite (empfohlen)</label>
+        <p class="hint">Der Bot sucht dann nur, wenn in der EA-App die Suchmaske „Spieler suchen“ offen ist. Er nutzt das echte Suchfeld dieser Seite. Verlässt du die Seite, hält er sofort an. Ohne den Haken sucht er von jeder Seite aus. Das fällt EA eher auf.</p>
+        <p class="hint" id="suchseite-stand" role="status" aria-live="polite"></p>
+        <!-- 27.09.2026: Sagt, welchen Weg die Suchen WIRKLICH genommen haben.
+             Der App-Weg schaltet sich bei Rating, Kartenart oder einem
+             Scan-Filter selbst ab - das war bisher nirgends zu sehen. -->
+        <p class="hint" id="suchweg-stand" role="status" aria-live="polite"></p>
+        <div class="row"><div><button id="suchseite-pruefen" class="secondary inline" type="button">Suchseite prüfen</button></div></div>
+        <p class="hint" data-modus="fst" hidden>Ohne eigene Grenzen gibt es keine Limits für Suchen und Käufe. Der Bot stoppt bei jedem Suchfehler von EA, bei Captcha, bei voller Transferliste, bei zu vielen Treffern und wenn du den Tab verlässt. Ein Haken bei „Grenzen“ in den Optionen bringt die strengen Limits zurück.</p>
+        <p class="hint" data-modus="streng">Schutzlimits: höchstens 150 Suchen pro Stunde, 350 Suchen pro Tag und 100 Kaufversuche pro Tag. Kaufversuche sind Sofortkäufe und Gebote, auch erfolglose. Ist ein Limit erreicht, stoppt der Bot automatisch. EA sperrte schon bei rund 450 Suchen am Tag.</p>
+      </div></details>
+      <details class="settings-group" id="verkaeufe"><summary>Verkäufe<small>Transferliste im Blick behalten</small></summary><div class="settings-content">
+        <label class="check"><input id="verkaufWache" type="checkbox">Verkäufe während des Laufs mitbekommen</label>
+        <p class="hint">In jeder Pause sieht der Bot in die Transferliste, ohne Anfrage an EA. Er zeigt dir, was verkauft wurde und was es gebracht hat. Nur bei einem Grund fragt er EA einmal frisch: höchstens alle 5 Minuten und höchstens 6-mal pro Lauf.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Er liest die Liste aus dem Speicher der Web App.</p>
+          <p class="hint">Gründe für eine frische Anfrage: Die Liste ist fast voll, oder eigene Karten sind im Verkauf.</p>
+        </details>
+
+        <!-- 28.09.2026: Dieser Haken stand hier ZWEIMAL mit derselben id
+             (autoAbraeumen). Nur der erste wurde gespeichert - wer den
+             zweiten anklickte, aenderte nichts. Die alte Fassung ist raus,
+             die neuere weiter unten (mit dem Nachpruefen-Text) bleibt. -->
+
+        <!-- 27.09.2026: Der Preis-Check kann waehrend eines Laufs nicht laufen.
+             Nach 60 Minuten stellte der Bot deshalb keine Karte mehr ein. FST
+             kennt das Problem nicht, weil der Verkaufspreis dort eingetippt wird
+             und nie veraltet. Der Haken ist die Entscheidung des Nutzers. -->
+        <label class="check"><input id="verkaufPreisLangeNutzen" type="checkbox">Verkaufspreis auch nach einer Stunde weiter nutzen</label>
+        <p class="hint">Ohne Haken stellt der Bot nach 60 Minuten Laufzeit keine Karte mehr ein. Jeder Kauf landet dann nur noch auf der Transferliste. Mit Haken nutzt der Bot den zuletzt gemessenen Preis weiter, höchstens 12 Stunden lang. Achtung: Ein alter Preis kann zu hoch sein. Dann bleibt die Karte länger im Verkauf stehen.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Der Grund: Nach 60 Minuten gilt der gemessene Verkaufspreis als zu alt. Der Preis-Check ist während eines Laufs gesperrt. Der Preis kann im Lauf also gar nicht frisch werden.</p>
+          <p class="hint">Der Verlustschutz bleibt: Bringt der Preis nach EAs 5 % Gebühr nicht mehr als der Kaufpreis, stellt der Bot nicht ein. Im Protokoll steht dann dabei, wie alt der Preis war.</p>
+        </details>
+        <label class="check"><input id="autoAbraeumen" type="checkbox">Verkaufte automatisch abräumen</label>
+        <p class="hint">Ist die Transferliste voll (100 Karten), räumt der Bot die verkauften selbst ab und macht weiter. Ohne den Haken stoppt er und sagt Bescheid. Danach sieht er frisch bei EA nach, ob die Karten wirklich weg sind. Das ist eine weitere Anfrage. Sie wird mitgezählt.</p>
+        <label for="listFestpreis">Festpreis beim „Gleich verkaufen“ (Coins)</label>
+        <input id="listFestpreis" type="number" min="0" max="15000000" step="50" placeholder="leer = gemessener Preis">
+        <p class="hint">Steht hier eine Zahl, stellt der Bot <b>jede</b> gekaufte Karte für genau diesen Preis ein. Die Zahl veraltet nie. Leer heißt: Der Bot nimmt den gemessenen Preis. Achtung: Die Zahl gilt für alle Käufe. Zu billig verkauft der Bot trotzdem nie: Bleibt nach 5 % EA-Gebühr kein Gewinn, stellt er nicht ein.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Die Zahl gilt auch nach acht Stunden Laufzeit. Genau so macht es FUT Simple Trader. Sinnvoll ist sie, wenn du auf einen bestimmten Spieler jagst.</p>
+          <p class="hint">Der gemessene Preis kommt erst vom Preis-Check, dann vom Marktpreis, den der Bot im Lauf selbst gemessen hat.</p>
+          <p class="hint">In jeder Zeile der Zielliste gibt es ein Feld „Verkauf fest“. Eine Zahl dort gilt nur für diesen Spieler und geht vor dieser hier.</p>
+        </details>
+      </div></details>
+      <details class="settings-group" id="toene"><summary>Töne<small>Ton bei Kauf und am Lauf-Ende</small></summary><div class="settings-content">
+        <label class="check"><input id="tonKauf" type="checkbox">Ton bei jedem Kauf</label>
+        <p class="hint">Ein kurzer heller Doppelton, sobald der Bot einen Spieler gekauft hat – auch bei einer gewonnenen Auktion.</p>
+
+        <label class="check"><input id="tonEnde" type="checkbox">Ton am Lauf-Ende</label>
+        <p class="hint">Drei Töne abwärts, wenn der Bot von selbst aufhört. Hält EA den Bot an, kommt ein deutlicher Warnton. Beim Stopp-Knopf und beim Not-Aus bleibt es still.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Der Warnton kommt bei einer Sperre, bei einem Captcha (Mensch-Prüfung), wenn die Anmeldung weg ist, und bei zu vielen Fehlern.</p>
+          <p class="hint">Bei einer Sperre hörst du ihn auch beim Preis-Check oder Markt-Scan.</p>
+        </details>
+
+        <label for="tonLautstaerke">Lautstärke <span id="tonLautstaerke-wert">60 %</span></label>
+        <input id="tonLautstaerke" type="range" min="10" max="100" step="10">
+
+        <p class="hint">Ton testen:</p>
+        <div class="row ton-test" role="group" aria-label="Ton testen">
+          <div><button id="ton-test-kauf" class="secondary" type="button">Kauf</button></div>
+          <div><button id="ton-test-ende" class="secondary" type="button">Ende</button></div>
+          <div><button id="ton-test-warnung" class="secondary" type="button">Warnung</button></div>
+        </div>
+        <p class="hint" id="ton-msg" role="status" aria-live="polite"></p>
+        <p class="hint">Die Töne entstehen im Browser selbst. Es wird nichts geladen und nichts an EA gesendet. Ist der EA-Tab stummgeschaltet, hörst du nichts.</p>
+      </div></details>
+
+      <details class="settings-group"><summary>EA-Endpunkte<small>Nur ändern, wenn der Bot nichts mehr findet</small></summary><div class="settings-content">
+        <p class="hint">Das sind die Namen und Adressen, mit denen der Bot mit EA spricht. EA hat keine davon veröffentlicht. Wir haben sie ermittelt. Ändert EA etwas, passt du sie hier an, ohne auf ein Update zu warten. Ungültige Eingaben werden verworfen. Dann bleibt der Standard aktiv.</p>
+        <div class="row">
+          <div><label for="ep-searchPath">Suchpfad</label><input id="ep-searchPath" type="text" spellcheck="false" placeholder="/transfermarket"></div>
+          <div><label for="ep-idParam">Spieler-Parameter</label><input id="ep-idParam" type="text" spellcheck="false" placeholder="maskedDefId"></div>
+        </div>
+        <div class="row">
+          <div><label for="ep-maxBuyParam">Max. Sofortkauf</label><input id="ep-maxBuyParam" type="text" spellcheck="false" placeholder="maxb"></div>
+          <div><label for="ep-minBuyParam">Min. Sofortkauf</label><input id="ep-minBuyParam" type="text" spellcheck="false" placeholder="minb"></div>
+        </div>
+        <div class="row">
+          <div><label for="ep-maxBidParam">Max. Gebot</label><input id="ep-maxBidParam" type="text" spellcheck="false" placeholder="macr"></div>
+          <div><label for="ep-bidMethod">Kauf-Methode</label><input id="ep-bidMethod" type="text" spellcheck="false" placeholder="PUT"></div>
+        </div>
+        <div class="row">
+          <div><label for="ep-ovrMinParam">Rating ab</label><input id="ep-ovrMinParam" type="text" spellcheck="false" placeholder="ovrMin"></div>
+          <div><label for="ep-ovrMaxParam">Rating bis</label><input id="ep-ovrMaxParam" type="text" spellcheck="false" placeholder="ovrMax"></div>
+        </div>
+        <label for="ep-bidPath">Kauf- und Gebotspfad<span class="hint"> · {id} steht für die Auktionsnummer</span></label>
+        <input id="ep-bidPath" type="text" spellcheck="false" placeholder="/trade/{id}/bid">
+        <div class="row">
+          <div><label for="ep-clubPath">Vereins-Pfad</label><input id="ep-clubPath" type="text" spellcheck="false" placeholder="/item"></div>
+          <div><label for="ep-clubMethod">Vereins-Methode</label><input id="ep-clubMethod" type="text" spellcheck="false" placeholder="PUT"></div>
+        </div>
+        <!-- Verein (28.09.2026): Der Standardname "club" ist GERATEN - als
+             einziger der Suchfelder. Hier laesst sich der echte Name
+             eintragen, sobald die Ablese-Hilfe darunter ihn zeigt. -->
+        <div class="row">
+          <div><label for="ep-clubParam">Vereins-Filter der Suchadresse</label><input id="ep-clubParam" type="text" spellcheck="false" placeholder="club (geraten)"></div>
+        </div>
+        <button id="ep-ablesen" class="ghost" type="button">EAs eigene Suchadresse ablesen</button>
+        <p class="hint">Suche erst in EAs Suchmaske mit gewähltem Verein. Lies dann sofort ab. Das kostet keine EA-Anfrage. Es wird nur gelesen, was die Seite schon geladen hat.</p>
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Gezeigt wird nur, was EAs eigene Maske gesucht hat. Suchen des Bots über den App-Weg erscheinen hier zu Recht auch, denn ihre Adresse hat EA selbst gebaut. Eigene Suchen des Bots über die direkte Adresse werden ausgefiltert. So bestätigt sich der geratene Name nicht selbst.</p>
+        </details>
+        <p class="hint" id="ep-ablesen-zeile"></p>
+        <p class="hint" id="ep-msg" aria-live="polite"></p>
+        <button id="ep-reset" class="secondary" type="button">Alle auf Standard zurücksetzen</button>
+      </div></details>
+      <!-- Sicherung, 25.09.2026. Ohne sie ist bei einem Browser-Wechsel alles
+           weg. Sperren, Abkuehlzeiten und Zaehler bleiben bewusst draussen -
+           sonst liesse sich eine laufende EA-Sperre wegkopieren. -->
+      <details class="settings-group" id="sicherung"><summary>Sicherung<small>Alles in eine Datei, alles zurück</small></summary><div class="settings-content">
+        <p class="hint">Die Datei bleibt auf deinem Rechner. Sie wird nirgendwo hochgeladen. Gesichert werden: Einstellungen, Ziellisten, Sammlungen, EA-Endpunkte, Preisverlauf, Preis-Gedächtnis, Käufe, Verkäufe, Lauf-Statistik und die Spielerliste.</p>
+        <p class="hint warn">Nicht mitgesichert: laufende EA-Sperren, Abkühlzeiten und die Zähler für Suchen und Käufe. Sie dürfen nicht wandern. Sonst ließe sich eine Sperre mit einer alten Datei wegkopieren.</p>
+        <button id="sicherung-export" class="ico ico-download secondary" type="button">Alles sichern</button>
+        <button id="sicherung-import" class="secondary" type="button">Wiederherstellen …</button>
+        <input id="sicherung-datei" type="file" accept="application/json,.json" hidden>
+        <p class="hint">Wiederherstellen überschreibt den jetzigen Stand. Die Datei wird vorher ganz geprüft. Passt sie nicht, wird nichts geschrieben. Während ein Lauf läuft, geht es nicht.</p>
+        <p class="hint" id="sicherung-msg" role="status" aria-live="polite"></p>
+      </div></details>
+      <details class="settings-group" id="wartung"><summary>Wartung<small data-modus="streng">Neu laden, eigene Grenzen, Ausnahme vom Tageslimit</small><small data-modus="fst" hidden>Neu laden, Speicher aufräumen, Zähler löschen</small></summary><div class="settings-content">
+        <p class="hint">Lädt den Bot neu, mit dem neuesten Stand. Danach lädt diese Seite neu. Deine Einstellungen und Käufe bleiben erhalten. Während ein Lauf läuft, ist der Knopf gesperrt.</p>
+        <button id="reload-extension" class="ico ico-refresh secondary" type="button">Erweiterung neu laden</button>
+        <!-- Speicherplatz, 25.09.2026. Ohne unlimitedStorage gilt fuer
+             chrome.storage.local eine Grenze von 10 MB. Lief er bisher voll,
+             hoerte das Preis-Gedaechtnis still auf zu wachsen - und niemand
+             erfuhr davon. -->
+        <div class="speicher-box">
+          <h4>Speicherplatz</h4>
+          <p class="hint" id="speicher-stand" role="status" aria-live="polite">Wird gelesen …</p>
+          <p class="hint">Aufräumen löscht die letzte Marktaufnahme. Es kürzt den Preisverlauf auf die letzten 20 Messungen je Karte. Es kürzt die Spielerliste auf 25.000 Einträge. Einstellungen, Ziellisten, Sammlungen, Käufe und das Preis-Gedächtnis bleiben unberührt. Die Spielerliste füllt sich beim nächsten Laden der Web App von selbst wieder auf.</p>
+          <button id="speicher-aufraeumen" class="secondary" type="button">Aufräumen</button>
+          <p class="hint" id="speicher-msg" aria-live="polite"></p>
+        </div>
+        <!-- Eigene Grenzen (25.09.2026). Anlass: Der Bot laeuft jetzt mit
+             FSTs Tempo, und FST hat gar kein Stundenlimit. Wer das Tempo
+             wirklich nutzen will, muss die Grenze selbst anheben koennen. -->
+        <p class="hint" data-modus="fst" hidden>Ohne eigene Grenzen gibt es keine eigenen Limits. Darum fehlen hier die Felder für Suchen pro Stunde und pro Tag und die Ausnahme vom Tageslimit. Schalte den Haken unter „Grenzen“ aus, dann sind sie wieder da. Deine eingetragenen Werte bleiben gespeichert.</p>
+        <div class="ausnahme-box" data-modus="streng">
+          <h4 class="ico ico-shield">Eigene Grenzen</h4>
+          <p class="hint">Leer lassen heißt: Es bleibt beim Standard (150 pro Stunde, 350 pro Tag). Nur eintragen, was du wirklich willst.</p>
+          <!-- 27.09.2026 richtiggestellt: Hier stand "er wartet den Rest der
+               Stunde". Das tat er nicht - der Code hoerte nach 15 Minuten
+               Warten auf. Das ist jetzt behoben, aber die Laufzeit beendet den
+               Lauf oft noch vorher. Beides steht nun da. -->
+          <p class="hint warn">Der Bot sucht seit dem 25.09. im Tempo von FUT Simple Trader. Das sind rund 4 Sekunden je Suche statt 12. Das Stundenlimit von 150 Suchen ist damit schon nach rund 15 Minuten erreicht. Danach wartet der Bot, bis die Stunde wieder Platz hat. Das können 45 Minuten sein. Wer hochdreht, geht ein Risiko bewusst ein: EA hat dieses Konto am 21.09. bei rund 450 Suchen am Tag gesperrt (Fehler 521).</p>
+          <details class="mehr"><summary>Mehr erfahren</summary>
+            <p class="hint">Der Bot wartet nur, solange die eingestellte Laufzeit noch läuft. Bei der Standard-Laufzeit von 30 Minuten endet der Lauf vorher. Wer durchgehend suchen will, lässt das Feld Laufzeit leer.</p>
+            <p class="hint">FUT Simple Trader hat kein Stundenlimit. Wir haben eins, weil EA dieses Konto am 21.09. gesperrt hat.</p>
+          </details>
+          <div class="grid2">
+            <!-- Hoechstens 200 (27.09.2026): Der Motor laesst nie mehr als 220
+                 EA-Anfragen in eine Stunde (CONFIG.GESAMT_MAX_STUNDE), davon
+                 200 Suchen. Frueher stand hier 900 - damit war das ganze
+                 Tagesbudget in gut einer halben Stunde verschossen, und genau
+                 diese Ballung hat am 21.09. die 521-Sperre ausgeloest. Eine
+                 Zahl, die der Bot nie faehrt, gehoert nicht ins Feld. -->
+            <div><label for="grenzeSuchStunde">Suchen pro Stunde</label><input id="grenzeSuchStunde" type="number" min="0" max="200" step="10" placeholder="150"></div>
+            <div><label for="grenzeSuchTag">Suchen pro Tag</label><input id="grenzeSuchTag" type="number" min="0" max="2000" step="10" placeholder="350"></div>
+          </div>
+          <p class="hint" id="grenzen-hinweis" aria-live="polite"></p>
+        </div>
+        <!-- Ausnahme vom Tageslimit: nur auf ausdruecklichen Wunsch, mit
+             Rueckfrage. Hebt nur die Suchen pro Tag an, fuer 6 Stunden. -->
+        <div class="ausnahme-box" data-modus="streng">
+          <h4 class="ico ico-shield">Ausnahme vom Tageslimit</h4>
+          <p class="hint warn">Achtung: EA hat heute schon gesperrt. Weitermachen kann eine längere Sperre auslösen. Die Ausnahme gilt nur 6 Stunden. Sie hebt nur die Suchen pro Tag an. Das Stundenlimit von 150 Suchen bleibt.</p>
+          <button id="ausnahme-start" class="secondary" type="button">Ausnahme: 150 Suchen extra (6 Std.)</button>
+          <!-- Rueckfrage im Menue statt window.confirm: Ein Systemfenster haelt
+               die ganze EA-Seite an und laesst sich von Hilfswerkzeugen nicht
+               bedienen. -->
+          <div class="ausnahme-frage" id="ausnahme-frage" hidden>
+            <p id="ausnahme-frage-text"></p>
+            <div class="ausnahme-frage-knoepfe">
+              <button id="ausnahme-nein" class="secondary" type="button">Abbrechen</button>
+              <button id="ausnahme-ja" class="go" type="button">Ja, einschalten</button>
+            </div>
+          </div>
+          <button id="ausnahme-ende" class="secondary" type="button" hidden>Ausnahme beenden</button>
+          <p class="hint" id="ausnahme-msg" role="status" aria-live="polite"></p>
+        </div>
+      </div></details>
+      <details class="settings-group"><summary>Schnittstelle prüfen<small>Welche Funktionen die Web App bereitstellt</small></summary><div class="settings-content">
+        <p class="hint">Prüft, welche eingebauten Funktionen die geöffnete Web App wirklich hat. Es wird nur nachgesehen, nichts aufgerufen. Die Prüfung verbraucht keine Anfrage.<span data-modus="streng"> Sie zählt nicht gegen deine Schutzlimits.</span></p>
+        <button id="probe" class="secondary" type="button">Web-App-Schnittstelle prüfen</button>
+        <p class="hint" id="probe-msg" aria-live="polite"></p>
+        <div id="probe-result"></div>
+        <div id="fields-result"></div>
+      </div></details>
+    </section>
+
+    <!-- ============================ Hilfe ============================ -->
+    <section id="view-help" role="tabpanel" class="help-page" aria-labelledby="tab-help" tabindex="0" hidden>
+      <div class="hilfe-karte">
+
+      <h4 id="hilfe-snipe">So geht's</h4>
+      <ol>
+        <li>Web App öffnen, einloggen und einmal ganz laden lassen. Oben steht dann „Verbunden“.</li>
+        <li><b>Auto:</b> Tippe einen Spieler ein. Setze Budget und Max. Käufe. Klicke dann auf <b>Autopilot starten</b>. Den Preis prüft der Bot selbst. Er kauft nur sofort, ohne Gebote. Budget, Max. Käufe, Tempo, Pausen und „Nach dem Kauf“ sind wie unter Manuell.</li>
+        <li><b>Manuell:</b> Schritt für Schritt – Spieler wählen, <b>Preis prüfen</b>, Zielpreis übernehmen, Budget setzen, am Ende <b>Sniping vorbereiten</b>.</li>
+        <li>Optional: Sammle mit <b>Zur Liste</b> mehrere Spieler. Der Start-Dialog zeigt immer genau, wen der Bot sucht. Dort startest du mit <b>Jetzt Sniping starten</b>.</li>
+        <li>Anhalten jederzeit mit <b>Stopp</b> oben – der Knopf erscheint, solange der Bot läuft.</li>
+      </ol>
+
+      </div>
+
+      <div class="hilfe-karte">
+
+
+      <h4>Die Zahlen oben</h4>
+      <ul>
+        <li><b>Gekauft</b> und <b>Ausgegeben</b>: was der aktuelle Lauf gekauft und bezahlt hat.</li>
+        <li><b>Gewinn</b>: Schätzung für die Käufe dieses Laufs. Rechnung: aktueller Marktpreis minus 5 % EA-Gebühr minus Kaufpreis. Echt ist er erst beim Verkauf. Ein „≈“ davor heißt: Für einige Karten fehlt ein Marktpreis. Sie zählen nicht mit.</li>
+        <li><b>Coins</b>: dein Kontostand. Er kommt von EA und wird nach jedem Kauf aktualisiert. Vor dem ersten Kontakt mit EA liest der Bot ihn oben in der Web App ab.</li>
+      </ul>
+
+      </div>
+
+      <div class="hilfe-karte">
+
+
+      <h4 id="hilfe-buys">Reiter Käufe › Dieser Lauf</h4>
+      <ul>
+        <li data-modus="fst" hidden><b>Scans</b>: Suchen auf dem Transfermarkt. Ohne eigene Grenzen gibt es keine Obergrenze pro Stunde oder pro Tag. Das Tempo stellst du im Start-Dialog ein. Dazu kommen die Pausen („Wie FST“: nach 25 bis 46 Suchen 21 bis 39 Sekunden).</li>
+        <li data-modus="streng"><b>Scans</b>: Suchen auf dem Transfermarkt. Die 150 Suchen pro Stunde sind nach gut einer Viertelstunde aufgebraucht. Danach wartet der Bot bis zur nächsten Stunde.
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Das Tempo stellst du im Start-Dialog ein. Dazu kommen die Sicherheitspausen. Rund 4,6 Sekunden je Suche bei <b>Sicher</b>, 3,9 bei <b>Normal</b>, 3,0 bei <b>Turbo</b>.</p>
+          <p class="hint">Seit dem 25.09.2026 sucht der Bot im Tempo von FUT Simple Trader. Vorher waren es 12 bis 17 Sekunden je Suche. Die reine Suchzeit für 150 Suchen beträgt etwa zehn Minuten. Mit den Sicherheitspausen sind es gut eine Viertelstunde.</p>
+        </details>
+        </li>
+        <li><b>Gebote</b>: abgegebene Gebote. Ein Gebot ist noch kein gewonnener Spieler. Fahr mit der Maus darüber. Dann siehst du, wie viele gewonnen und verloren sind.</li>
+        <li><b>Gebunden</b>: Coins in noch laufenden Geboten. Sie sind reserviert, nicht ausgegeben. Sie werden frei, sobald ein Gebot verloren geht. Solange hier etwas steht, hast du entsprechend weniger Budget.</li>
+        <li><b>Verpasst</b>: Angebote, die jemand anderes schneller gekauft hat. Viele davon heißen: Dein Zielpreis ist realistisch.</li>
+        <li><b>Fehler</b>: fehlgeschlagene Anfragen.</li>
+      </ul>
+
+      </div>
+
+      <div class="hilfe-karte">
+
+
+      <h4>Wann der Bot von selbst stoppt</h4>
+      <ul>
+        <li>Max. Käufe erreicht, Budget reicht nicht mehr oder Zeitlimit abgelaufen.</li>
+        <li data-modus="fst" hidden>Alle Spieler haben ihre Grenze erreicht. Ohne eigene Grenzen gilt nur, was du bei „Suchen“, „Käufe“ und „Versuche“ je Spieler selbst einträgst. Leer heißt: keine Grenze.</li>
+        <li data-modus="streng">Alle Spieler haben ihre Grenze erreicht: normal 3 Käufe oder 100 Suchen je Spieler. Das kann vor „Max. Käufe“ passieren. Der Autopilot nimmt dafür „Max. Käufe“.</li>
+        <li data-modus="fst" hidden>Es gibt kein Schutzlimit. Der Bot hört bei jedem Suchfehler von EA auf (jede Antwort außer „in Ordnung“). Ein Fehler bei einem Kauf stoppt ihn nicht.</li>
+        <li data-modus="streng">Schutzlimit erreicht: standardmäßig 150 Suchen pro Stunde, 350 Suchen oder 100 Kaufversuche am Tag. Die beiden Suchgrenzen setzt du selbst unter Optionen › <b>Eigene Grenzen</b>. Höher heißt mehr Treffer, aber mehr Sperrrisiko. EA hat dieses Konto am 21.09. bei rund 450 Suchen am Tag gesperrt.</li>
+        <li>Sofort bei Captcha, Marktsperre oder abgelaufener Anmeldung. Ein Captcha ist eine Mensch-Prüfung. Die löst du selbst in der Web App.</li>
+        <li data-modus="streng">Nach 3 Fehlern in Folge.</li>
+        <li>Die Transferliste ist voll (100 Karten), und die Käufe sollen dorthin. Mit dem Haken „Verkaufte automatisch abräumen“ räumt der Bot zuerst auf und macht weiter.</li>
+        <li>Wenn du den EA-Tab verlässt oder das Fenster minimierst. Ein Mensch sucht nicht in einem Tab, den er nicht sieht.</li>
+        <li>Not-Aus: <b>Strg + Umschalt + P</b> hält sofort alles an.</li>
+      </ul>
+
+      </div>
+
+      <div class="hilfe-karte">
+
+
+      <h4>Gut zu wissen</h4>
+      <ul>
+        <li>Töne bei Kauf und am Lauf-Ende schaltest du unter Optionen › Töne ein. Am Anfang sind beide aus.</li>
+        <li>Der Bot läuft nur, solange der Tab mit der Web App offen ist.</li>
+        <li>Er verkauft nur, wenn du im Reiter Käufe auf „Einstellen“ klickst, und ändert deinen Zielpreis nie selbst.</li>
+        <li>EA verbietet automatisierte Käufe. Das Risiko einer Sperre liegt bei deinem Account.</li>
+      </ul>
+
+      </div>
+
+      <!-- Zwei neue Absaetze (25.09.2026): Zu den Reitern Filter und Optionen
+           stand in der Hilfe bisher gar nichts. Das Fragezeichen oben springt
+           hierher, wenn einer der beiden offen ist. -->
+      <div class="hilfe-karte">
+
+      <h4 id="hilfe-filters">Reiter Filter</h4>
+      <ul>
+        <li><b>Markt-Scan</b>: Der Bot sieht sich den Transfermarkt an. Er schlägt Spieler vor, bei denen sich das Snipen gerade lohnt. Er kauft dabei nichts. Ein Scan kostet bis zu 16 EA-Anfragen. Darum läuft er höchstens alle 7 Minuten.</li>
+        <li><b>Kauf · Verkauf · Gewinn</b> auf jeder Karte: Bis zu diesem Kauf-Preis kauft der Bot. Zum Verkauf-Preis lässt sich die Karte erfahrungsgemäß verkaufen. Der Gewinn ist das, was nach 5 % EA-Gebühr übrig bleibt.</li>
+        <li><b>Die zwei Prozentzahlen</b>: Treffer je 100 Suchen, und wie oft daraus ein Kauf wurde. Sie stammen aus deinen eigenen Läufen der letzten 7 Tage. Steht „(geschätzt)“ dabei, kommt die Zahl erst aus dem letzten Scan.</li>
+        <li><b>Filter aktivieren</b> legt den Spieler in die Zielliste unter Snipen. Ein Live-Filter gilt 15 Minuten, danach musst du ihn erneuern.</li>
+        <li data-modus="fst" hidden><b>Rotation</b> (Modus „Live-Filter“ im Autopilot): Der Autopilot fährt die Filter nacheinander ab, mit Pause dazwischen (60 bis 600 Sekunden). Ohne eigene Grenzen gibt es keine Höchstzahl an Filtern. Sie endet, wenn die Laufzeit um ist.</li>
+        <li data-modus="streng"><b>Rotation</b> (Modus „Live-Filter“ im Autopilot): Der Autopilot fährt die Filter nacheinander ab. Höchstens 12 pro Runde, mit Pause dazwischen.</li>
+      </ul>
+
+      </div>
+
+      <div class="hilfe-karte">
+
+
+      <h4 id="hilfe-settings">Reiter Optionen</h4>
+      <ul>
+        <li><b>Töne</b>: Kauf, Lauf-Ende und Warnung. Lautstärke von 0 bis 100, dazu eine Hörprobe. Am Anfang sind die Töne aus.</li>
+        <li data-modus="fst" hidden><b>Grenzen</b>: Ganz oben in den Optionen schaltest du den Haken „Ohne eigene Grenzen“ an oder aus. Ist er an, gibt es keine eigenen Grenzen. EA kann dein Konto trotzdem sperren. Der Weg zurück: Haken aus.</li>
+        <li data-modus="streng"><b>Schutzgrenzen</b>: 150 Suchen pro Stunde, 350 am Tag, dazu Grenzen für Käufe und ein Deckel über allem. Diese Zahlen schützen dein Konto. EA hat schon bei rund 450 Suchen am Tag gesperrt. Höher stellen heißt: Sperre riskieren.</li>
+        <li data-modus="streng"><b>Eigene Grenzen</b>: Hier setzt du die beiden Suchgrenzen selbst. Leer heißt Standard: 150 pro Stunde und 350 pro Tag. Was über 150 bzw. 350 liegt, wird gelb. Das ist eine Warnung, kein Fehler.
+        <details class="mehr"><summary>Mehr erfahren</summary>
+          <p class="hint">Der Kasten rechnet vor, wie lange die Stundengrenze beim eingestellten Tempo hält. Bei Normal und 150 Suchen sind das etwa zehn Minuten reine Suchzeit.</p>
+        </details>
+        </li>
+        <li data-modus="streng"><b>Ausnahme vom Tageslimit</b>: Hebt für 6 Stunden nur die Suchen pro Tag an, mit Rückfrage. Das Stundenlimit bleibt.</li>
+        <li><b>Preis-Methode</b>: Wie der Verkaufspreis geschätzt wird. Sie wirkt überall, wo „Verkauf ca.“ steht.</li>
+        <li><b>Neu laden</b>: Lädt die Erweiterung neu, ohne Chrome neu zu starten. Danach die EA-Web-App einmal mit F5 neu laden.</li>
+      </ul>
+
+      </div>
+    </section>
+  </main>
+
+  <div id="filter-modal-wrap" class="modal-backdrop" hidden>
+    <div class="filter-modal" role="dialog" aria-modal="true" aria-labelledby="filter-modal-title">
+      <div class="modal-head">
+        <div id="fm-portrait" class="fm-portrait"></div>
+        <div class="modal-title"><b id="filter-modal-title">Filter prüfen</b><small id="fm-player"></small></div>
+        <button id="fm-close" class="modal-close" type="button" aria-label="Schließen"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8"/></svg></button>
+      </div>
+
+      <!-- Die drei Zahlen, um die es geht - gross und zuerst. -->
+      <div class="fm-summary">
+        <div><span>Kauf bis</span><b id="fm-buy">–</b></div>
+        <div><span>Verkauf ca.</span><b id="fm-sell">–</b></div>
+        <div class="fm-gain"><span>Gewinn</span><b id="fm-gain">–</b></div>
+      </div>
+      <!-- Aufklappbar wie im Start-Dialog (FST .safety-block): zu sieht man nur
+           die Pille, auf die Warnungen als Karten. Gibt es Warnungen, klappt
+           popup.js (renderFilterModal) den Kasten von selbst auf. -->
+      <details class="modal-panel safety-block fm-safety-wrap" id="fm-safety-wrap">
+        <summary class="modal-panel-head"><span class="ico ico-shield">Sicherheitsassistent</span><b id="fm-safety" class="safety-ok">Keine Warnungen</b></summary>
+        <div class="safety-block__body">
+          <div id="fm-safety-box" class="fm-safety ok"><div id="fm-warnings" class="fm-warnings"></div></div>
+        </div>
+      </details>
+      <!-- Nach dem frischen Preis-Check: alt -> neu, wenn sich die Zahlen
+           spuerbar geaendert haben (popup.js frischeGruende). Geladen wird
+           dann erst mit "Trotzdem laden". -->
+      <p id="fm-frisch" class="fm-safety warn fm-frisch" hidden></p>
+
+      <!-- Alle Einstellungen in einer Karte: links der Name, rechts die Wahl. -->
+      <div class="modal-panel fm-settings">
+        <div class="fm-row">
+          <span class="fm-label">Verkauf<small id="fm-risk" class="modal-risk mid">mittleres Risiko</small></span>
+          <div class="segmented" id="fm-sale-mode" role="group" aria-label="Verkauf">
+            <button type="button" data-mode="safe">Schnell</button><button type="button" data-mode="normal" class="active">Normal</button><button type="button" data-mode="lazy">Geduldig</button>
+          </div>
+        </div>
+        <div class="fm-row">
+          <span class="fm-label">Gewinn<small>mindestens</small></span>
+          <div class="segmented" id="fm-profit-mode" role="group" aria-label="Mindestgewinn">
+            <button type="button" data-mode="auto" class="active">Auto</button><button type="button" data-mode="percent">%</button><button type="button" data-mode="coins">Coins</button>
+          </div>
+        </div>
+        <div class="modal-number"><button id="fm-minus" type="button" aria-label="Weniger">−</button><input id="fm-profit-value" type="number" min="0" step="1" value="300" disabled><button id="fm-plus" type="button" aria-label="Mehr">+</button></div>
+        <p class="modal-result"><span id="fm-sale-help"></span> <span id="fm-profit-help"></span></p>
+        <div class="fm-checks">
+          <label class="check"><input id="fm-auto-pricing" type="checkbox" checked>Preise frisch prüfen</label>
+          <label class="check"><input id="fm-auto-start" type="checkbox">Sofort starten</label>
+        </div>
+        <div class="loader" id="fm-loader" hidden></div>
+        <p id="fm-progress" class="hint" role="status" aria-live="polite"></p>
+      </div>
+      <div class="modal-actions">
+        <button id="fm-manual" type="button" class="ico ico-sliders secondary">Selbst einstellen</button>
+        <button id="fm-start" type="button" class="ico ico-check go">Prüfen & laden</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="start-modal-wrap" class="modal-backdrop" hidden>
+    <div class="filter-modal start-wizard" role="dialog" aria-modal="true" aria-labelledby="start-modal-title">
+      <div class="modal-head">
+        <div class="modal-check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
+        <div class="modal-title"><b id="start-modal-title">Sniping vorbereiten</b><small id="sm-summary">Einstellungen vor dem Start prüfen</small></div>
+        <button id="sm-close" class="modal-close" type="button" aria-label="Schließen"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8"/></svg></button>
+      </div>
+      <!-- Genau die Spieler, die der Start sucht. Oben gewaehlt und Liste koennen
+           auseinanderlaufen - hier sieht man es, bevor Coins ausgegeben werden. -->
+      <div class="modal-panel">
+        <div class="modal-panel-head"><span class="ico ico-target">Diese Spieler sucht der Bot</span></div>
+        <div id="sm-targets" class="sm-targets"></div>
+        <div id="sm-mismatch" class="sm-mismatch" hidden>
+          <p id="sm-mismatch-text"></p>
+          <div class="sm-mismatch-actions">
+            <button id="sm-only-selected" type="button" class="secondary"></button>
+            <button id="sm-add-selected" type="button" class="secondary">Zur Liste hinzufügen</button>
+          </div>
+        </div>
+      </div>
+      <!-- Aufklappbar wie FSTs Sicherheitsassistent: zu sieht man nur die
+           Pille, auf die Zahlen und der Hinweis. Gibt es Warnungen oder eine
+           Sperre, klappt popup.js (startSafetyInfo) den Kasten von selbst auf. -->
+      <details class="modal-panel safety-block" id="sm-safety-box">
+        <summary class="modal-panel-head"><span class="ico ico-shield">Sicherheitsassistent</span><span id="sm-safety" class="safety-ok">Keine Warnungen</span></summary>
+        <div class="safety-block__body">
+          <div id="sm-activity" class="activity-grid"></div>
+          <p id="sm-warning" class="hint"></p>
+        </div>
+      </details>
+      <!-- "Einstellungen im Ueberblick": kleine Chips wie FSTs "Settings
+           overview". Sie zeigen nur, was unten eingestellt ist (popup.js
+           startSafetyInfo). Leer, solange popup.js nichts eingetragen hat. -->
+      <div class="modal-panel">
+        <div class="modal-panel-head"><span class="ico ico-list">Einstellungen im Überblick</span></div>
+        <div id="sm-chips" class="settings-chips"></div>
+      </div>
+      <div class="modal-panel">
+        <div class="modal-panel-head"><span class="ico ico-bolt">Schnellprofil</span></div>
+        <div class="segmented" id="sm-profile" role="group" aria-label="Schnellprofil">
+          <button type="button" data-value="safe">Sicher</button><button type="button" data-value="balanced">Ausgewogen</button><button type="button" data-value="intense">Intensiv</button>
+        </div>
+        <p id="sm-budget-info" class="modal-result"></p>
+      </div>
+
+      <div class="modal-panel">
+        <div class="modal-panel-head"><span class="ico ico-sliders">Feinabstimmung</span></div>
+        <p class="hint">Alles auf Auto, außer du stellst eine Zeile auf Eigene.</p>
+
+        <div class="tune" data-row="speed">
+          <div class="tune-head"><b>Tempo</b><span class="segmented tune-mode" role="group" aria-label="Tempo"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
+          <p class="tune-auto">Normal · mittleres Risiko</p>
+          <div class="tune-custom" hidden>
+            <select id="speedMode"><option value="safe">Sicher – langsam, wenig auffällig</option><option value="normal">Normal – ausgewogen</option><option value="turbo">Turbo – schnell, mehr Risiko</option></select>
+          </div>
+        </div>
+
+        <div class="tune" data-row="pause">
+          <div class="tune-head"><b>Pausen</b><span class="segmented tune-mode" role="group" aria-label="Pausen"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
+          <p class="tune-auto">Ausgewogen · alle 30–50 Suchen eine Pause</p>
+          <div class="tune-custom" hidden>
+            <!-- "Keine Pausen" seit 27.09.2026, wie bei FUT Simple Trader
+                 (dort sogar der Standard). Bei uns bleibt "Ausgewogen" der
+                 Standard. Die Beschriftung sagt, wann es etwas bringt: Pausen
+                 kosten keine Suche, sie verteilen sie nur - ohne sie ist die
+                 Stunde nur schneller voll. -->
+            <select id="pausePreset"><option value="fst" hidden>Wie FST – nach 25 bis 46 Suchen 21 bis 39 Sekunden Pause</option><option value="short">Kurz und selten</option><option value="medium">Ausgewogen</option><option value="long">Lang und häufiger</option><option value="off">Keine Pausen – bringt nur etwas mit angehobener Stundengrenze</option></select>
+          </div>
+        </div>
+
+        <div class="tune" data-row="runtime">
+          <div class="tune-head"><b>Laufzeit</b><span class="segmented tune-mode" role="group" aria-label="Laufzeit"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
+          <p class="tune-auto">30 Minuten · kurze Läufe fallen weniger auf</p>
+          <div class="tune-custom" hidden>
+            <label for="timeLimitMin">Minuten</label>
+            <!-- Leer heisst: ohne Zeitlimit (der Motor deckelt bei 300 Min.,
+                 wie FSTs Regler: scripts.js Z. 40314). Der alte Platzhalter "30"
+                 behauptete das Gegenteil (28.09.2026). -->
+            <input id="timeLimitMin" type="number" min="1" max="300" placeholder="leer = ohne Zeitlimit">
+          </div>
+        </div>
+
+        <div class="tune" data-row="limits">
+          <div class="tune-head"><b>Grenzen je Spieler</b><span class="segmented tune-mode" role="group" aria-label="Grenzen je Spieler"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
+          <p class="tune-auto" data-modus="streng">100 Suchen · 3 Käufe · 6 Kaufversuche · kein Coin-Limit</p>
+          <p class="tune-auto" data-modus="fst" hidden>Ohne Grenze · du kannst Suchen, Käufe und Versuche selbst eintragen</p>
+          <div class="tune-custom wizard-grid" hidden>
+            <label for="filterSearchLimit">Suchen<input id="filterSearchLimit" type="number" min="10" max="150"></label>
+            <label for="filterBuyLimit" title="Gebote zählen mit">Käufe<input id="filterBuyLimit" type="number" min="1" max="20"></label>
+            <!-- Punkt 13 der FST-Liste (27.09.2026): Die Grenze, die im Alltag
+                 am häufigsten zuschlägt. Leer = doppelt so viele wie Käufe. -->
+            <label for="filterAnfrageLimit" title="Auch Versuche, bei denen jemand schneller war">Versuche<input id="filterAnfrageLimit" type="number" min="1" max="60" placeholder="2 × Käufe"></label>
+            <label for="filterSpendLimit">Coins<input id="filterSpendLimit" type="number" min="0" step="1" placeholder="0 = aus"></label>
+          </div>
+        </div>
+
+        <div class="tune" data-row="bids">
+          <div class="tune-head"><b>Gebote</b><span class="segmented tune-mode" role="group" aria-label="Gebote"><button type="button" data-mode="auto">Auto</button><button type="button" data-mode="custom">Eigene</button></span></div>
+          <p class="tune-auto">Aus · nur Sofortkauf</p>
+          <div class="tune-custom" hidden>
+            <label class="check"><input id="bidSniping" type="checkbox">Auch auf profitable Auktionen bieten</label>
+            <select id="bidSeconds"><option value="30">Nur letzte 30 Sekunden</option><option value="60">Nur letzte 60 Sekunden</option></select>
+          </div>
+        </div>
+      </div>
+      <p id="sm-estimate" class="modal-result"></p>
+      <div class="modal-actions">
+        <button id="sm-cancel" type="button" class="secondary">Abbrechen</button>
+        <button id="sm-start" type="button" class="ico ico-play go">Jetzt Sniping starten</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

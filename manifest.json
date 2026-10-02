@@ -1,0 +1,40 @@
+﻿{
+  "manifest_version": 3,
+  "name": "FC27 Own Bot",
+  "version": "4.26",
+  "description": "Eigener lokaler Sniping-Bot fuer FC 27",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage", "unlimitedStorage", "notifications", "scripting"],
+  "host_permissions": ["https://www.ea.com/*"],
+  "background": { "service_worker": "background.js" },
+  "icons": { "128": "img/icon128.png" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.ea.com/*ultimate-team/web-app*"],
+      "js": ["sniffer.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.ea.com/*ultimate-team/web-app*"],
+      "js": ["content.js", "popup.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "FC27 Own Bot – Leiste ein-/ausklappen",
+    "default_icon": "img/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "popup.html",
+        "popup-design.css",
+        "fonts/*",
+        "img/*",
+        "player-placeholder.svg"
+      ],
+      "matches": ["https://www.ea.com/*"]
+    }
+  ]
+}
