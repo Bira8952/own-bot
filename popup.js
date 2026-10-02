@@ -445,6 +445,35 @@ function umStufenVerschieben(preis, stufen) {
   return wert;
 }
 
+// Startgebot und Sofortkauf beim Einstellen (02.10.2026). Wortgleich mit
+// content.js einstellPreise - ein Test haelt beide gleich (Wortlaut und ein
+// Raster). Der Knopf im Verkaufs-Helfer muss genau den Preis zeigen, den der
+// Motor danach auch einstellt. Begruendung der Regeln steht in content.js.
+function einstellPreise(wunsch, eaMin, eaMax) {
+  const min = Math.max(0, Math.floor(Number(eaMin) || 0));
+  const max = Math.max(0, Math.floor(Number(eaMax) || 0));
+  let sofort = roundDownToStep(Math.max(0, Math.floor(Number(wunsch) || 0)));
+  let grenze = "";
+  if (max && sofort > max) {
+    sofort = roundDownToStep(max);
+    grenze = "max";
+  }
+  // Kleinster Leiterpreis ab eaMin. EA schickt eaMin heute immer auf der
+  // Leiter - liegt es einmal daneben, zaehlt die naechste Stufe darueber.
+  let minLeiter = roundDownToStep(min);
+  if (minLeiter < min) minLeiter = roundDownToStep(minLeiter + stepFor(minLeiter));
+  const sofortMin = minLeiter ? roundDownToStep(minLeiter + stepFor(minLeiter)) : 0;
+  if (sofortMin && sofort < sofortMin) {
+    sofort = sofortMin;
+    grenze = "min";
+  }
+  if (max && sofort > max) return { sofort: 0, start: 0, grenze, fehler: "spanne" };
+  let start = roundDownToStep(sofort - 1);
+  if (minLeiter && start < minLeiter) start = minLeiter;
+  if (!(start > 0) || start >= sofort) return { sofort, start: 0, grenze, fehler: "start" };
+  return { sofort, start, grenze, fehler: "" };
+}
+
 // ohneFstDeckel (28.09.2026): true heisst "den Haken Preisdeckel wie FST
 // ignorieren". Gebraucht vom KAUFPREIS (suggestionFor): Der Haken soll nur
 // beeinflussen, zu welchem Preis eine gekaufte Karte eingestellt wird - nie,
@@ -544,6 +573,10 @@ function verkaufsPreisText(vp) {
   const kopf = "Preis nach Alter (" + (PREIS_METHODE_TEXT[vp.methode] || "Empfohlen") + "): ";
   if (vp.grund === "keineDaten") {
     return "Preis nach Alter: Diese Messung kennt das Alter der Angebote noch nicht. Nach dem nächsten Preis-Check rechnet der Bot damit.";
+  }
+  // Unbestaetigter Preissprung nach oben (02.10.2026, siehe suggestionFor).
+  if (vp.grund === "sprung") {
+    return "Preis nach Alter: Wegen eines unbestätigten Preissprungs rechnet der Bot zum Kaufen mit dem vorigen, kleineren Marktpreis – bitte nachmessen.";
   }
   if (vp.grund === "wenig") {
     return "Preis nach Alter: Nur " + vp.mitAlter + " von " + vp.n + " Angeboten haben eine bekannte Restzeit – zu wenig. Der Bot rechnet mit dem Marktpreis.";
@@ -981,6 +1014,30 @@ function mindestKaufpreis(entry) {
 
 // Vorschlag: eigener Abschlag unter dem Marktpreis, gueltige Preisstufe, EA-Spanne.
 function suggestionFor(entry) {
+  // Preissprung (02.10.2026, content.js savePriceEntry): Ist der Preis seit
+  // dem letzten Check um mehr als 35 % GESTIEGEN und noch unbestaetigt,
+  // zaehlt zum Kaufen der kleinere Vorschlag. Das ganze Objekt (Kauf,
+  // saleNet, Gewinn) kommt aus EINER Rechnung, damit die Anzeige stimmig
+  // bleibt. Bei einem Sprung nach unten ist der neue Preis schon der
+  // kleinere - dann bleibt alles wie bisher. Kein automatischer Preis-Check.
+  const sv = entry && entry.preisSprung && Number(entry.preisSprung.vorher) > 0 ? Number(entry.preisSprung.vorher) : 0;
+  if (sv > 0 && sv < (Number(entry.market) || 0)) {
+    const neu = suggestionFor(Object.assign({}, entry, { preisSprung: null }));
+    // Das Alter gehoert nur zur neuen Messung - fuer den alten Preis gibt es
+    // keins (verkaufsPreis wuerde es ueber alter.markt ohnehin verwerfen).
+    const alt = suggestionFor(Object.assign({}, entry, { market: sv, alter: null, preisSprung: null }));
+    if (alt.value < neu.value) {
+      return Object.assign({}, alt, {
+        preisSprung: entry.preisSprung,
+        verkauf: Object.assign({}, alt.verkauf, { grund: "sprung" }),
+        note: [alt.note, "Preissprung: Zum Kaufen rechnet der Bot mit dem kleineren, vorigen Marktpreis (" + fmt(sv) + ") – bitte nachmessen."].filter(Boolean).join(" ")
+      });
+    }
+    return Object.assign({}, neu, {
+      preisSprung: entry.preisSprung,
+      note: [neu.note, "Preissprung unbestätigt – bitte nachmessen."].filter(Boolean).join(" ")
+    });
+  }
   // Verkaufspreis = Marktpreis, oder etwas weniger, wenn Angebote lange
   // unverkauft stehen (F1). Zielpreis, Gewinn und Wertung folgen von selbst.
   // Der Kaufpreis haengt NICHT am Haken "Preisdeckel wie FST" (28.09.2026) -
@@ -1121,7 +1178,7 @@ function renderPricePanel() {
   // Preis nach Alter: erklaeren, warum der Bot vielleicht tiefer rechnet (F1).
   if ($("p-alter")) {
     $("p-alter").textContent = verkaufsPreisText(suggestion.verkauf);
-    $("p-alter").className = "hint" + (suggestion.verkauf.grund === "gedeckelt" || suggestion.verkauf.grund === "wenig"
+    $("p-alter").className = "hint" + (suggestion.verkauf.grund === "gedeckelt" || suggestion.verkauf.grund === "wenig" || suggestion.verkauf.grund === "sprung"
       ? " warn"
       : suggestion.verkauf.quelle === "alter" ? " ok" : "");
   }
@@ -1179,6 +1236,11 @@ function renderPricePanel() {
   // Rechnung ein - er darf nur warnen, wenn unsere Messung weit danebenliegt.
   if (latest.schnittWarnung && latest.eaSchnitt > 0) {
     hints.push("EA nennt selbst einen Marktschnitt von " + fmt(latest.eaSchnitt) + " Coins – das liegt weit neben unserer Messung. Bitte noch einmal messen, bevor du danach kaufst.");
+  }
+  // Unbestaetigter Preissprung (02.10.2026, content.js savePriceEntry). Nur
+  // ein Hinweis - nachgemessen wird nie automatisch, das kostet Suchen.
+  if (latest.preisSprung && Number(latest.preisSprung.vorher) > 0) {
+    hints.push("Preissprung: Der vorige Preis-Check lag bei " + fmt(latest.preisSprung.vorher) + " Coins, jetzt " + fmt(latest.market) + ". Zum Kaufen gilt der kleinere, zum Verkaufen der größere Preis – bitte nachmessen.");
   }
   const abstand = abstandWarnung(suggestion.value, latest.lowest);
   if (abstand) hints.push(abstand);
@@ -3813,12 +3875,29 @@ function verkaufVorschlag(item) {
     typeof item.playStyle === "number" && Number.isFinite(item.playStyle) &&
     item.playStyle !== gefunden.entry.chem;
   const verkauf = verkaufsPreis(gefunden.entry, preisMethodeValue());
-  let preis = roundDownToStep(verkauf.preis);
-  if (item.eaMin) preis = Math.max(preis, item.eaMin);
-  if (item.eaMax) preis = Math.min(preis, item.eaMax);
+  let wunsch = verkauf.preis;
+  // Unbestaetigter Preissprung (02.10.2026): Zum Verkaufen gilt der groessere
+  // der beiden Preise - dieselbe Regel wie content.js listPreisFuer, beide
+  // Stellen muessen denselben Preis rechnen. Kein automatischer Preis-Check.
+  const e = gefunden.entry;
+  const ps = e.preisSprung && typeof e.preisSprung === "object" ? e.preisSprung : null;
+  const vorher = ps ? Number(ps.vorher) || 0 : 0;
+  if (vorher > (Number(e.market) || 0)) {
+    const altVp = verkaufsPreis({ market: vorher, eaMin: e.eaMin, eaMax: e.eaMax }, preisMethodeValue());
+    if (altVp.preis > wunsch) wunsch = altVp.preis;
+  }
+  // Startgebot und Sofortkauf aus derselben Rechnung wie im Motor
+  // (02.10.2026). Frueher wurde hier auf genau eaMin geklemmt - genau das
+  // lehnte EA dann ab (Fund 25). Eine zu enge Spanne zeigt der Knopf als
+  // "Nicht einstellbar", statt eine Anfrage fuer nichts zu schicken.
+  const ep = einstellPreise(wunsch, item.eaMin, item.eaMax);
+  const preis = ep.sofort || roundDownToStep(wunsch);
+  const einstellFehler = ep.fehler === "spanne"
+    ? "EAs Preisspanne für diese Karte lässt keinen Sofortkauf über dem Mindestpreis zu."
+    : ep.fehler ? "Für diesen Preis gibt es kein gültiges Startgebot." : "";
   const alter = Date.now() - gefunden.entry.t;
   const netto = Math.floor(preis * (1 - SALE_FEE));
-  return { preis, alter, frisch: !chemieFalsch && alter <= VERKAUF_PREIS_FRISCH_MS, chemieFalsch, netto, verkauf, gewinn: item.gekauftFuer > 0 ? netto - item.gekauftFuer : null };
+  return { preis, start: ep.start, einstellFehler, preisSprung: ps ? ps.hinweis || "" : "", alter, frisch: !chemieFalsch && alter <= VERKAUF_PREIS_FRISCH_MS, chemieFalsch, netto, verkauf, gewinn: item.gekauftFuer > 0 ? netto - item.gekauftFuer : null };
 }
 
 // Eigener Name: gewinnText gibt es schon (Text fuer Kopfzeile und Kaufliste).
@@ -3873,11 +3952,18 @@ function verkaufZeile(item, st) {
     if (verkaufPreisLaeuft === item.itemId) {
       knopf.textContent = "prüfe … " + verkaufPreisSuchen;
       knopf.disabled = true;
+    } else if (vorschlag && vorschlag.frisch && vorschlag.einstellFehler) {
+      // EAs Spanne laesst keinen gueltigen Preis zu (02.10.2026): Der Knopf
+      // sagt es, statt eine Anfrage zu schicken, die EA ablehnen wuerde.
+      knopf.textContent = "Nicht einstellbar";
+      knopf.disabled = true;
+      knopf.title = vorschlag.einstellFehler;
     } else if (vorschlag && vorschlag.frisch) {
       knopf.classList.add("go");
       knopf.textContent = "Einstellen " + fmt(vorschlag.preis);
-      knopf.title = "Für " + fmt(vorschlag.preis) + " Coins (Startgebot eine Stufe darunter) eine Stunde einstellen. Nach 5 % Gebühr bleiben " + fmt(vorschlag.netto) + "." +
-        (vorschlag.verkauf && vorschlag.verkauf.quelle === "alter" ? " Preis nach Alter: " + verkaufsPreisGrund(vorschlag.verkauf) : "");
+      knopf.title = "Für " + fmt(vorschlag.preis) + " Coins (Startgebot " + fmt(vorschlag.start) + ") eine Stunde einstellen. Nach 5 % Gebühr bleiben " + fmt(vorschlag.netto) + "." +
+        (vorschlag.verkauf && vorschlag.verkauf.quelle === "alter" ? " Preis nach Alter: " + verkaufsPreisGrund(vorschlag.verkauf) : "") +
+        (vorschlag.preisSprung ? " " + vorschlag.preisSprung : "");
       knopf.disabled = beschaeftigt || Boolean(sperre);
       if (sperre) knopf.title = sperre;
       knopf.addEventListener("click", () => verkaufEinstellen(item, vorschlag.preis));

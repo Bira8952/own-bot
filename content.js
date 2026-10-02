@@ -260,6 +260,21 @@
     BID_MAX_OPEN_MIN: 60, // Notbremse, wenn die Restzeit nie erkannt wurde
     SUGGEST_DISCOUNT: 0.1, // Vorschlag: 10 % unter dem Marktpreis
     HISTORY_DAYS: 14,
+    // Preissprung-Schutz (02.10.2026). Weicht ein neuer Preis-Check um mehr
+    // als 35 % vom letzten derselben Karte ab, gilt er als unbestaetigt: Zum
+    // Kaufen zaehlt dann der kleinere, zum Verkaufen der groessere Preis. Die
+    // Idee stammt von MagicBuyer (kein Code uebernommen). Dessen automatische
+    // Nachmessung nach 20 s lassen wir bewusst weg - sie kostet zusaetzliche
+    // EA-Suchen, und das Konto war schon gesperrt. Bestaetigt wird beim
+    // naechsten Preis-Check, den der Nutzer ohnehin startet.
+    //
+    // Das Fenster ist 6 Stunden statt MagicBuyers 30 Minuten: Der Preis-Check
+    // ist waehrend eines Laufs gesperrt, zwei Checks liegen darum oft Stunden
+    // auseinander - mit 30 Minuten griffe der Schutz praktisch nie. Die Werte
+    // stehen hier und nicht lose vor savePriceEntry, damit Tests sie ueber
+    // einen CONFIG-Stub bekommen.
+    PREIS_SPRUNG_AB: 0.35,
+    PREIS_SPRUNG_REF_MAX_MS: 6 * 60 * 60 * 1000,
     DROUGHT_MIN: 20, // ab so vielen Minuten ohne Kauf gibt es einen Hinweis
     // Live-Filter gelten nur 15 Minuten - mit 20 kaeme der Hinweis nie.
     DROUGHT_LIVE_MIN: 8,
@@ -1656,6 +1671,46 @@
       }
     }
     return wert;
+  }
+
+  // Startgebot und Sofortkauf beim Einstellen (02.10.2026). Wortgleich mit
+  // popup.js - ein Test haelt beide gleich (Wortlaut und ein Raster).
+  //
+  // Anlass: Fund 25/26 der Komplettpruefung. gleichEinstellen klemmte den
+  // Sofortkauf auf genau EAs Mindestpreis und liess dann Startgebot =
+  // Sofortkauf zu - das lehnt EA ab. Der Verkaufs-Helfer schickte denselben
+  // Preis los. Jede abgelehnte Anfrage ist eine Anfrage zu viel.
+  //
+  // Regeln: Sofortkauf auf EAs Preisleiter, hoechstens eaMax, mindestens eine
+  // Stufe ueber dem kleinsten Leiterpreis ab eaMin. Startgebot genau eine
+  // Stufe darunter, nie unter eaMin. Fehler "spanne": EAs Spanne laesst
+  // keinen Sofortkauf ueber dem Mindestpreis zu. Fehler "start": es gibt kein
+  // Startgebot unter dem Sofortkauf (unter 200 Coins ohne bekannte Spanne).
+  // Die Idee hat MagicBuyer (prepareListing), kein Code uebernommen. Reine
+  // Rechnung ohne Texte, damit beide Fassungen gleich bleiben. 0 Anfragen.
+  function einstellPreise(wunsch, eaMin, eaMax) {
+    const min = Math.max(0, Math.floor(Number(eaMin) || 0));
+    const max = Math.max(0, Math.floor(Number(eaMax) || 0));
+    let sofort = roundDownToStep(Math.max(0, Math.floor(Number(wunsch) || 0)));
+    let grenze = "";
+    if (max && sofort > max) {
+      sofort = roundDownToStep(max);
+      grenze = "max";
+    }
+    // Kleinster Leiterpreis ab eaMin. EA schickt eaMin heute immer auf der
+    // Leiter - liegt es einmal daneben, zaehlt die naechste Stufe darueber.
+    let minLeiter = roundDownToStep(min);
+    if (minLeiter < min) minLeiter = roundDownToStep(minLeiter + stepFor(minLeiter));
+    const sofortMin = minLeiter ? roundDownToStep(minLeiter + stepFor(minLeiter)) : 0;
+    if (sofortMin && sofort < sofortMin) {
+      sofort = sofortMin;
+      grenze = "min";
+    }
+    if (max && sofort > max) return { sofort: 0, start: 0, grenze, fehler: "spanne" };
+    let start = roundDownToStep(sofort - 1);
+    if (minLeiter && start < minLeiter) start = minLeiter;
+    if (!(start > 0) || start >= sofort) return { sofort, start: 0, grenze, fehler: "start" };
+    return { sofort, start, grenze, fehler: "" };
   }
 
   // Spieler + optionales Rating (0 = jede Version) + optionale Kartenart
@@ -3393,6 +3448,37 @@
       const all = current && typeof current === "object" ? current : {};
       const cutoff = Date.now() - CONFIG.HISTORY_DAYS * DAY;
       const list = (Array.isArray(all[key]) ? all[key] : []).filter((e) => e && e.t >= cutoff);
+      // Preissprung-Schutz (02.10.2026, siehe CONFIG.PREIS_SPRUNG_AB). Der
+      // neue Marktpreis wird mit dem letzten Eintrag derselben Karte
+      // verglichen. Kein Vergleich ohne Vorgaenger, ohne Marktpreis, bei
+      // einem Vorgaenger aelter als 6 Stunden oder bei anderer gemessener
+      // Chemie - das ist ein anderer Markt, kein Sprung.
+      //
+      // Der Eintrag wird absichtlich direkt veraendert (dasselbe Objekt), damit
+      // runPriceCheck den Hinweis nach dem await melden kann. Scheitert das
+      // Speichern, steht der Hinweis trotzdem im Protokoll - harmlos.
+      // Ein Folge-Check innerhalb von 35 % bestaetigt den Sprung von selbst.
+      // Liegt er wieder am Stand vor dem Sprung, war der Sprung der
+      // Ausreisser - dann wird nicht neu markiert. Nachgemessen wird nie
+      // automatisch: 0 Anfragen.
+      const vorher = list.length ? list[list.length - 1] : null;
+      const altMarkt = Number(vorher && vorher.market) || 0;
+      const neuMarkt = Number(entry && entry.market) || 0;
+      const jetztT = Number(entry && entry.t) || Date.now();
+      const chemAnders = Boolean(vorher && vorher.chemGefiltert === true && entry && entry.chemGefiltert === true && vorher.chem !== entry.chem);
+      if (altMarkt > 0 && neuMarkt > 0 && !chemAnders && jetztT - Number(vorher.t) <= CONFIG.PREIS_SPRUNG_REF_MAX_MS) {
+        const abw = Math.abs(neuMarkt - altMarkt) / altMarkt;
+        const davor = vorher.preisSprung && typeof vorher.preisSprung === "object" ? Number(vorher.preisSprung.vorher) || 0 : 0;
+        const zurueck = davor > 0 && Math.abs(neuMarkt - davor) / davor <= CONFIG.PREIS_SPRUNG_AB;
+        if (abw > CONFIG.PREIS_SPRUNG_AB && !zurueck) {
+          entry.preisSprung = {
+            vorher: altMarkt,
+            vorherT: Number(vorher.t) || 0,
+            abweichung: Math.round(abw * 100) / 100,
+            hinweis: "Preissprung über " + Math.round(CONFIG.PREIS_SPRUNG_AB * 100) + " % zum letzten Preis-Check – unbestätigt, bitte nachmessen."
+          };
+        }
+      }
       list.push(entry);
       all[key] = list.slice(-100);
       const keys = Object.keys(all).filter((k) => Array.isArray(all[k]) && all[k].length);
@@ -3541,7 +3627,14 @@
       if (!alive()) return;
       await savePriceEntry(priceKey(player.playerId, player.rating, player.rarity), entry);
       log("Preis-Check " + playerLabel(player) + ":", entry);
-      endCheck(token, "", false);
+      // Preissprung (02.10.2026): ins Protokoll und als Meldung unter den
+      // Knopf "Preis pruefen". Kein pushEvent - der Preis-Check laeuft nur
+      // ohne Lauf. Und KEIN automatischer neuer Check: Nachmessen kostet
+      // Suchen und bleibt die Entscheidung des Nutzers.
+      if (entry.preisSprung) {
+        warn("Preissprung bei " + playerLabel(player) + ": " + fmt(entry.preisSprung.vorher) + " → " + fmt(entry.market) + " Coins. Zum Kaufen gilt der kleinere, zum Verkaufen der größere Preis – bitte nachmessen.");
+      }
+      endCheck(token, entry.preisSprung ? entry.preisSprung.hinweis : "", false);
     } catch (e) {
       const text = e instanceof HardStop ? e.message : "Preis-Check fehlgeschlagen: " + e.message;
       warn(text);
@@ -4078,13 +4171,25 @@
       if (!eintrag) throw new Error("Spieler steht nicht mehr auf der Transferliste. Bitte aktualisieren.");
       if (!eintrag.handelbar) throw new Error("Dieser Spieler ist nicht handelbar.");
       if (eintrag.tradeState === "active") throw new Error("Steht schon im Verkauf.");
-      if (eintrag.eaMin && sofort < eintrag.eaMin) throw new Error("EA erlaubt für diese Karte mindestens " + fmt(eintrag.eaMin) + ".");
-      if (eintrag.eaMax && sofort > eintrag.eaMax) throw new Error("EA erlaubt für diese Karte höchstens " + fmt(eintrag.eaMax) + ".");
       // Startgebot eine Stufe unter dem Sofortkauf: EA verlangt, dass es
       // darunter liegt, und so kauft eher jemand sofort, als lange zu bieten.
-      let start = roundDownToStep(sofort - 1);
-      if (eintrag.eaMin && start < eintrag.eaMin) start = eintrag.eaMin;
-      if (!(start > 0) || start >= sofort) throw new Error("Für diesen Preis gibt es kein gültiges Startgebot.");
+      // Seit 02.10.2026 aus der gemeinsamen Rechnung einstellPreise: Ein
+      // Sofortkauf genau auf eaMin ging vorher als Anfrage raus und kam als
+      // Ablehnung zurueck (Fund 25). Ein von Hand gewaehlter Preis wird hier
+      // nicht still geaendert - der Knopf im Popup zeigt schon den Preis aus
+      // derselben Rechnung, eine Abweichung heisst veraltete Daten. Jede
+      // Ablehnung passiert vor verkaufAusfuehren, also ohne EA-Anfrage. Eine
+      // Gewinnpruefung kommt hier nicht dazu: Dieser Weg hat bewusst keinen
+      // Verlustschutz, der Nutzer entscheidet selbst.
+      const ep = einstellPreise(sofort, eintrag.eaMin, eintrag.eaMax);
+      if (ep.fehler === "spanne") throw new Error("EAs Preisspanne für diese Karte lässt keinen Sofortkauf über dem Mindestpreis zu.");
+      if (ep.fehler) throw new Error("Für diesen Preis gibt es kein gültiges Startgebot.");
+      if (ep.sofort !== sofort) {
+        throw new Error(ep.grenze === "min"
+          ? "EA erlaubt für diese Karte frühestens " + fmt(ep.sofort) + " (eine Stufe über dem Mindestpreis " + fmt(eintrag.eaMin) + "). Bitte die Liste aktualisieren."
+          : "EA erlaubt für diese Karte höchstens " + fmt(eintrag.eaMax) + ".");
+      }
+      const start = ep.start;
       await verkaufAusfuehren("einstellen", { itemId, startPreis: start, sofortPreis: sofort, dauer: VERKAUF_DAUER_S });
       const name = eintrag.name || "Spieler";
       await updateStorage("transferliste", (current) => {
@@ -5454,14 +5559,32 @@
       entry = null;
     }
     const jetzt = Date.now();
+    // Preissprung (02.10.2026, siehe savePriceEntry): Ist der neueste Eintrag
+    // als unbestaetigter Sprung markiert, gilt beim Verkaufen der groessere
+    // der beiden Preise. Ein echter Absturz kostet so nur Zeit - die Karte
+    // bleibt liegen, Verlust gibt es keinen. Ein Fehlpreis im leeren Markt
+    // verschenkt dagegen die Karte. Nachgemessen wird nicht automatisch.
+    // Dieselbe Regel steht in popup.js verkaufVorschlag - beide Stellen
+    // muessen denselben Preis rechnen. Lokal, damit der Abschnitt ohne
+    // weitere Hilfen auskommt.
+    const mitSprung = (e, vp) => {
+      const s = e && e.preisSprung && typeof e.preisSprung === "object" ? e.preisSprung : null;
+      if (!s) return { preis: vp.preis, sprung: null };
+      const vorher = plausiblePrice(s.vorher);
+      const alt = vorher > Number(e.market) ? verkaufsPreisAusEintrag({ market: vorher, eaMin: e.eaMin, eaMax: e.eaMax }, STATE.preisMethode) : null;
+      const nimmAlt = Boolean(alt && alt.preis > vp.preis);
+      return { preis: nimmAlt ? alt.preis : vp.preis, sprung: { vorher, markt: Number(e.market) || 0, genommen: nimmAlt ? "vorher" : "neu" } };
+    };
     if (entry && Number(entry.market) > 0 && jetzt - Number(entry.t) <= CONFIG.LIST_PRICE_MAX_AGE_MS) {
       const vp = verkaufsPreisAusEintrag(entry, STATE.preisMethode);
+      const ps = mitSprung(entry, vp);
       return {
-        preis: vp.preis,
+        preis: ps.preis,
         quelle: vp.quelle,
         alterMs: jetzt - Number(entry.t),
         eaMin: plausiblePrice(entry.eaMin),
-        eaMax: plausiblePrice(entry.eaMax)
+        eaMax: plausiblePrice(entry.eaMax),
+        sprung: ps.sprung
       };
     }
     // Ruecklage: der Preis, den die Leiste beim Start mitgegeben hat - aber
@@ -5488,12 +5611,14 @@
     if (STATE.preisLangeNutzen && entry && Number(entry.market) > 0 &&
         jetzt - Number(entry.t) <= CONFIG.LIST_PRICE_LANG_MAX_AGE_MS) {
       const vpAlt = verkaufsPreisAusEintrag(entry, STATE.preisMethode);
+      const psAlt = mitSprung(entry, vpAlt);
       return {
-        preis: vpAlt.preis,
+        preis: psAlt.preis,
         quelle: vpAlt.quelle,
         alterMs: jetzt - Number(entry.t),
         eaMin: plausiblePrice(entry.eaMin),
-        eaMax: plausiblePrice(entry.eaMax)
+        eaMax: plausiblePrice(entry.eaMax),
+        sprung: psAlt.sprung
       };
     }
     const alt = entry ? " Der letzte Preis-Check ist " + Math.round((jetzt - Number(entry.t)) / 60000) + " Minuten alt." : " Es gibt noch keinen Preis-Check.";
@@ -5550,19 +5675,40 @@
         }
       }
     }
-    let sofort = roundDownToStep(p.preis);
-    if (eaMax && sofort > eaMax) sofort = roundDownToStep(eaMax);
-    if (eaMin && sofort < eaMin) sofort = eaMin;
+    // Startgebot und Sofortkauf aus der gemeinsamen Rechnung (02.10.2026).
+    // Frueher wurde der Sofortkauf auf genau eaMin geklemmt und das Startgebot
+    // durfte gleich hoch sein - genau das lehnt EA ab (Fund 25/26). Jetzt
+    // liegt der Sofortkauf mindestens eine Stufe ueber eaMin, das Startgebot
+    // eine Stufe darunter. Eine zu enge Spanne wird gar nicht erst geschickt.
+    const ep = einstellPreise(p.preis, eaMin, eaMax);
+    if (ep.fehler === "spanne") {
+      return { ok: false, grund: "EAs Preisspanne (" + fmt(eaMin) + " bis " + fmt(eaMax) + ") lässt keinen Sofortkauf über dem Mindestpreis zu." };
+    }
+    const sofort = ep.sofort;
     if (!(sofort >= CONFIG.LIST_MIN_PRICE)) return { ok: false, grund: "Verkaufspreis zu niedrig (" + fmt(sofort) + " Coins)." };
-    let start = roundDownToStep(sofort - 1);
-    if (eaMin && start < eaMin) start = eaMin;
-    // Liegt der Preis genau auf dem EA-Minimum, darf das Startgebot gleich
-    // hoch sein - tiefer geht es dort nicht.
-    if (!(start > 0) || start > sofort) return { ok: false, grund: "Für " + fmt(sofort) + " Coins gibt es kein gültiges Startgebot." };
+    if (ep.fehler) return { ok: false, grund: "Für " + fmt(sofort) + " Coins gibt es kein gültiges Startgebot." };
+    const start = ep.start;
     // Verlustschutz. Hier steht ein echtes return - anders als bei FST.
     const netto = Math.floor(sofort * (1 - CONFIG.SALE_FEE));
     if (!(netto > kaufPreis)) {
       return { ok: false, grund: "Kein Gewinn: " + fmt(sofort) + " Coins bringen nach 5 % Gebühr nur " + fmt(netto) + ", gekauft für " + fmt(kaufPreis) + "." };
+    }
+    // Verlustschutz auch fuers Startgebot (02.10.2026, Fund 26). Bietet nur
+    // einer zum Startgebot, geht die Karte dafuer weg: Kauf 949, Sofortkauf
+    // 1.000, Start 950 brachte nach Gebuehr 902 - 47 Coins Verlust.
+    //
+    // Anheben geht nicht: Das Startgebot steht schon auf der hoechsten Stufe
+    // unter dem Sofortkauf. Noch hoeher waere es gleich dem Sofortkauf, und
+    // das lehnt EA ab. Beide Preise hochzusetzen hiesse ueber dem gemessenen
+    // Markt einstellen - die Karte verkauft sich schlechter, und der Preis
+    // wuerde an der Preisermittlung vorbei veraendert. Darum: nicht
+    // einstellen. executeBuy schiebt die Karte dann wie bei jedem anderen
+    // Grund auf die Transferliste - eine Anfrage statt der Einstell-Anfrage,
+    // also keine zusaetzliche. Zum Selbstkostenpreis (gleich) ist erlaubt:
+    // das ist kein Verlust.
+    const nettoStart = Math.floor(start * (1 - CONFIG.SALE_FEE));
+    if (nettoStart < kaufPreis) {
+      return { ok: false, grund: "Startgebot " + fmt(start) + " brächte nach 5 % Gebühr nur " + fmt(nettoStart) + ", gekauft für " + fmt(kaufPreis) + " – nicht eingestellt, damit ein einzelnes Gebot keinen Verlust bringt." };
     }
     await sleep(randomBetween(CONFIG.LIST_STEP_MIN_MS, CONFIG.LIST_STEP_MAX_MS));
     await reserveUsage("aktion", target.key);
@@ -5577,7 +5723,7 @@
       return { ok: false, grund: "Einstellen ohne klare Antwort: " + e.message };
     }
     if (!res.ok) return { ok: false, grund: "EA hat das Einstellen abgelehnt (HTTP " + res.status + ")." };
-    return { ok: true, sofort, start, quelle: p.quelle, alterMin: Math.round(p.alterMs / 60000) };
+    return { ok: true, sofort, start, quelle: p.quelle, alterMin: Math.round(p.alterMs / 60000), sprung: p.sprung || null };
   }
 
   // ---------------------------------------------------------------------------
@@ -6101,7 +6247,14 @@
         const preisAlt = Number(angebot.alterMin) >= 60
           ? " Der Verkaufspreis ist " + Math.round(Number(angebot.alterMin) / 60) + " Std. alt."
           : "";
-        const t = target.playerName + " steht für " + fmt(angebot.sofort) + " Coins im Verkauf (1 Stunde, Start " + fmt(angebot.start) + ")." + preisAlt;
+        // Unbestaetigter Preissprung (02.10.2026): muss im Verkaufs-Log
+        // stehen, sonst wundert sich jemand ueber den hoeheren Preis.
+        const sprungText = angebot.sprung
+          ? (angebot.sprung.genommen === "vorher"
+            ? " Preissprung unbestätigt: eingestellt zum vorigen, höheren Preis (" + fmt(angebot.sprung.vorher) + " statt " + fmt(angebot.sprung.markt) + ") – bitte nachmessen."
+            : " Preissprung unbestätigt (vorher " + fmt(angebot.sprung.vorher) + ", jetzt " + fmt(angebot.sprung.markt) + ") – bitte nachmessen.")
+          : "";
+        const t = target.playerName + " steht für " + fmt(angebot.sofort) + " Coins im Verkauf (1 Stunde, Start " + fmt(angebot.start) + ")." + preisAlt + sprungText;
         setMessage(t, "run");
         pushEvent("verkauf", t);
         log(t);
