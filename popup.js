@@ -49,6 +49,8 @@ function setAfterBuy(wert) {
 // Die Eingrenzungen des Markt-Scans werden mitgespeichert - sonst waeren
 // sie nach jedem Neuladen der Seite wieder weg.
 const SELECT_FIELDS = ["speedMode", "pausePreset", "preisMethode", "rarity-wahl", "rotQuelle",
+  // profitSortMode (02.10.2026): Filterliste nach echtem Gewinn je Suche ("auto") oder Wertung ("manual").
+  "profitSortMode",
   // rotAbzModus (28.09.2026): sperren = wie bisher, nur = FSTs include.
   "rotAbzModus",
   "scanf-rarity", "scanf-level", "scanf-position", "scanf-league", "scanf-nation", "scanf-playStyle", "scanf-club"];
@@ -74,6 +76,7 @@ const DEFAULTS = {
   // Woher die Rotation ihre Filter nimmt (28.09.2026). "live" ist der
   // bisherige Weg - der Standard aendert also fuer niemanden etwas.
   rotQuelle: "live",
+  profitSortMode: "auto",
   // 27.09.2026: Die Auswahl fuer die Rotation. 0 bis 10 und ALLE Haken
   // gesetzt heisst: Es wird nichts aussortiert. Die Mindestwertung darf auf
   // keinen Fall hoeher starten - am 23.09. fand die Rotation mit einer
@@ -1373,21 +1376,25 @@ function localFilterStats(key, entry) {
   const laeufe = alle.length;
   if (scans > 0) {
     return {
-      scans, hits, bought,
+      scans, hits, bought, missed,
       hitRate: Math.min(100, hits / scans * 100),
+      // Kaufquote (02.10.2026): nur wirkliche Kaeufe je Suche. Verpasste
+      // Angebote bringen keine Coins und duerfen den Profit nicht aufblasen.
+      buyRate: Math.min(100, bought / scans * 100),
       successRate: hits > 0 ? Math.min(100, bought / hits * 100) : 0,
       estimated: false,
       laeufe
     };
   }
   if (gemesseneAktivitaet(entry) === "unbekannt") {
-    return { scans: 0, hits: 0, bought: 0, hitRate: 0, successRate: 0, estimated: true, keineDaten: true, laeufe };
+    return { scans: 0, hits: 0, bought: 0, missed: 0, hitRate: 0, buyRate: 0, successRate: 0, estimated: true, keineDaten: true, laeufe };
   }
   const sample = Math.max(1, Number(entry.sampleSize) || 1);
   const disappeared = Math.max(0, Number(entry.disappeared) || 0);
   return {
-    scans: 0, hits: disappeared, bought: 0,
+    scans: 0, hits: disappeared, bought: 0, missed: 0,
     hitRate: Math.min(100, disappeared / sample * 100),
+    buyRate: 0,
     successRate: 0,
     estimated: true,
     keineDaten: false,
@@ -1604,13 +1611,75 @@ function tempoName(tempo) {
 function gewinnProStunde(stats, suggestion, usage) {
   if (!stats || stats.estimated) return null;
   const gewinn = Number(suggestion && suggestion.expectedProfit) || 0;
-  const rate = Number(stats.hitRate) || 0;
+  // Kaufquote statt Trefferquote (02.10.2026): Ein verpasstes Angebot bringt
+  // nichts. Mit der Trefferquote war die Zahl um Treffer/Kaeufe zu hoch.
+  const rate = Number(stats.buyRate) || 0;
   if (!(gewinn > 0) || !(rate > 0)) return null;
   const tempo = $("speedMode") ? $("speedMode").value : "normal";
   const sek = tempoSekunden(tempo);
   const ausTempo = Math.floor(3600 / sek);
   const limit = Number(usage && usage.searchLimitHour) || 150;
   return Math.round(Math.min(ausTempo, limit) * (rate / 100) * gewinn);
+}
+
+// ---------------------------------------------------------------------------
+// Sortierung nach echtem Gewinn (02.10.2026)
+//
+// Eine hohe Wertung ist eine Schaetzung. Was zaehlt, sind Coins je Suche:
+// Kaeufe je Suche mal Gewinn je Kauf. Ab zwei echten Verkaeufen gilt der
+// echte Durchschnittsgewinn, sonst der geschaetzte. Ungetestete Filter
+// stehen vor gemessenen Filtern, die nie gekauft haben - sie verdienen eine
+// Chance, die anderen haben ihre gehabt.
+// ---------------------------------------------------------------------------
+
+// Echter Gewinn eines Filters: Kauf (purchases) und Verkauf (verkaeufe) ueber
+// die Karten-ID verbunden. Aeltere Kaeufe ohne Schluessel zaehlen nur fuer
+// Schluessel ohne Kartenart (Spieler:Rating).
+function realProfitStats(key) {
+  const kaeufe = new Map();
+  for (const k of purchases) {
+    if (!k || !k.itemId) continue;
+    const kKey = k.key || (k.playerId + ":" + (k.rating || 0));
+    if (kKey === key) kaeufe.set(String(k.itemId), k);
+  }
+  let sold = 0;
+  let summe = 0;
+  let wins = 0;
+  let losses = 0;
+  for (const v of verkaeufe) {
+    const kauf = v && v.itemId ? kaeufe.get(String(v.itemId)) : null;
+    if (!kauf || !(Number(v.preis) > 0)) continue;
+    const gewinn = Math.round(Number(v.preis) * (1 - SALE_FEE) - (Number(kauf.price) || 0));
+    sold += 1;
+    summe += gewinn;
+    if (gewinn > 0) wins += 1;
+    else if (gewinn < 0) losses += 1;
+  }
+  return { sold, avgProfit: sold ? Math.round(summe / sold) : 0, wins, losses };
+}
+
+// Coins je Suche, oder null fuer "noch nicht gemessen".
+function profitJeSuche(row) {
+  const st = row.stats || {};
+  if (st.estimated || !(st.scans > 0)) return null;
+  const echt = row.real && row.real.sold >= 2;
+  const gewinn = echt ? row.real.avgProfit : Number(row.suggestion && row.suggestion.expectedProfit) || 0;
+  return (Number(st.bought) || 0) / st.scans * gewinn;
+}
+
+function profitZeilenVergleich(a, b) {
+  const pa = profitJeSuche(a);
+  const pb = profitJeSuche(b);
+  const gruppe = (p) => (p === null ? 1 : p > 0 ? 0 : 2); // gemessen mit Gewinn, ungetestet, gemessen ohne Gewinn
+  return gruppe(pa) - gruppe(pb) || (pb || 0) - (pa || 0) || b.score - a.score;
+}
+
+function filterZeilenVergleich(a, b) {
+  const feld = $("profitSortMode");
+  if (feld && feld.value === "manual") {
+    return b.score - a.score || (Number(b.suggestion && b.suggestion.expectedProfit) || 0) - (Number(a.suggestion && a.suggestion.expectedProfit) || 0);
+  }
+  return profitZeilenVergleich(a, b);
 }
 
 function wertungText(score, teile) {
@@ -1862,6 +1931,7 @@ function liveFilterRows(alleGruppen) {
       score: Math.max(0, roh - abkuehlAbzug(roh, kuehl)),
       budget: budgetGroup(suggestion.value)
     });
+    rows[rows.length - 1].real = realProfitStats(rows[rows.length - 1].key);
   }
   // Dazu die Karten, die laut Preis-Gedaechtnis gerade unter ihrem
   // ueblichen Preis liegen. Sie kosten keine Anfrage und stehen nur da,
@@ -1891,10 +1961,12 @@ function liveFilterRows(alleGruppen) {
       score: Math.max(0, roh - abkuehlAbzug(roh, kuehl)),
       budget: budgetGroup(suggestion.value)
     });
+    rows[rows.length - 1].real = realProfitStats(rows[rows.length - 1].key);
   }
   // FST wirft nie eine Zeile weg - die Budget-Gruppe blendet nur aus
   // (v-show, Z. 35698-35705). Und es wird NICHT abgeschnitten.
-  rows.sort((a, b) => b.score - a.score || b.suggestion.expectedProfit - a.suggestion.expectedProfit);
+  // 02.10.2026: nach echtem Gewinn je Suche (Auto) oder wie bisher nach Wertung (Manuell).
+  rows.sort(filterZeilenVergleich);
   for (const row of rows) {
     row.sichtbar = filterBudget === "all" || row.budget === filterBudget;
     row.fuerDich = false;
@@ -5380,7 +5452,9 @@ function rotationKandidaten(ohneAuswahl) {
       if (a.key === letzterKey && b.key !== letzterKey) return 1;
       if (b.key === letzterKey && a.key !== letzterKey) return -1;
     }
-    return b.score - a.score || b.suggestion.expectedProfit - a.suggestion.expectedProfit;
+    // 02.10.2026: dieselbe Reihenfolge wie die Liste - nach echtem Gewinn je
+    // Suche (Auto) oder nach Wertung (Manuell).
+    return filterZeilenVergleich(a, b);
   });
 }
 
@@ -9467,6 +9541,8 @@ $("probe").addEventListener("click", async () => {
 for (const field of NUMBER_FIELDS) $(field).addEventListener("change", saveSettings);
 for (const field of CHECK_FIELDS) $(field).addEventListener("change", saveSettings);
 for (const field of SELECT_FIELDS) $(field).addEventListener("change", saveSettings);
+// Sortierung der Filterliste sofort sichtbar machen (02.10.2026).
+$("profitSortMode").addEventListener("change", () => renderLiveFilters());
 // FST-Modus (01.10.2026): Nach dem Umschalten den Stand des Motors neu holen -
 // erst der Motor sagt, was wirklich gilt. Bis dahin steht die Anzeige noch im
 // alten Modus (das sind nur Sekundenbruchteile).
@@ -9785,8 +9861,12 @@ rotationMerkerPruefen();
 // EA-Anfrage.
 // ---------------------------------------------------------------------------
 
-const SPEICHER_GRENZE = 10 * 1024 * 1024; // Chrome-Grenze ohne unlimitedStorage
-const SPEICHER_ENG = 0.8; // ab hier wird aufgeraeumt empfohlen
+// Mit "unlimitedStorage" (manifest.json, seit 28.09.2026) gibt es keine
+// 10-MB-Grenze mehr. Wie content.js (speicherPruefen): Erst ab 200 MB stimmt
+// etwas nicht. Vorher warnte die Leiste schon ab 8 MB "Es wird eng" und
+// draengte zum Aufraeumen - das kuerzt Preisverlauf und Spielerliste grundlos.
+const SPEICHER_UNGEWOEHNLICH = 200 * 1024 * 1024;
+const SPEICHER_ENG = 0.8; // ab 160 MB wird aufgeraeumt empfohlen
 const PLAYERLIST_KURZ = 25000; // so viele Spieler bleiben beim Aufraeumen
 const HISTORY_KURZ = 20; // so viele Messungen bleiben je Karte
 
@@ -9804,12 +9884,12 @@ async function speicherStand() {
   }
   try {
     const belegt = await chrome.storage.local.getBytesInUse(null);
-    const anteil = belegt / SPEICHER_GRENZE;
-    feld.className = "hint" + (anteil >= SPEICHER_ENG ? " err" : anteil >= 0.6 ? " warn" : "");
-    feld.textContent = "Belegt: " + mbText(belegt) + " von 10 MB (" + Math.round(anteil * 100) + " %)." +
+    const anteil = belegt / SPEICHER_UNGEWOEHNLICH;
+    feld.className = "hint" + (anteil >= SPEICHER_ENG ? " err" : "");
+    feld.textContent = "Belegt: " + mbText(belegt) + "." +
       (anteil >= SPEICHER_ENG
-        ? " Es wird eng. Räum auf – sonst hört das Preis-Gedächtnis still auf zu wachsen, und der Bot rechnet mit alten Preisen weiter."
-        : "");
+        ? " Das ist ungewöhnlich viel – wahrscheinlich stimmt etwas nicht. Bitte aufräumen."
+        : " Die Erweiterung darf unbegrenzt speichern, Aufräumen ist nicht nötig.");
   } catch (e) {
     feld.className = "hint";
     feld.textContent = "Belegter Platz nicht lesbar: " + e.message;

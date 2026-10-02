@@ -806,6 +806,14 @@
             <button type="button" data-budget="mid">Mittel</button>
             <button type="button" data-budget="high">Hoch</button>
           </div>
+          <!-- 02.10.2026: Auto = nach echtem Gewinn je Suche (Kaeufe je Suche x
+               Gewinn, ab 2 Verkaeufen der echte), Manuell = nach Wertung. -->
+          <label class="lf-sort" for="profitSortMode">Sortieren
+            <select id="profitSortMode">
+              <option value="auto">Nach echtem Gewinn</option>
+              <option value="manual">Nach Wertung</option>
+            </select>
+          </label>
         </div>
         <div class="filter-columns lf-col-header"><span class="player-col lf-col-header__player">Spieler</span><span class="number-col lf-col-header__price">Preis</span><span class="number-col lf-col-header__score">Wertung</span></div>
         <div id="filter-list"></div>

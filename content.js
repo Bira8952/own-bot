@@ -626,8 +626,8 @@
   // ---------------------------------------------------------------------------
   // Speicherplatz im Blick behalten (25.09.2026).
   //
-  // chrome.storage.local hat eine feste Grenze (rund 10 MB; die Erweiterung
-  // hat kein unlimitedStorage). Preis-Verlauf, Kauf-Liste, Preis-Gedaechtnis,
+  // chrome.storage.local hatte eine feste Grenze (rund 10 MB). Seit 28.09.2026
+  // hat die Erweiterung unlimitedStorage - gewarnt wird erst ab 200 MB. Preis-Verlauf, Kauf-Liste, Preis-Gedaechtnis,
   // Filterlisten und Spielerbilder wachsen mit jedem Tag. Ist die Grenze
   // erreicht, schlaegt jedes Speichern fehl - und alle unsere Schreibversuche
   // fangen den Fehler still ab. Der Bot liefe dann weiter, wuerde sich aber
@@ -6072,6 +6072,9 @@
         playerId: target.playerId,
         playerName: target.playerName,
         rating: toInt(auction.itemData && auction.itemData.rating) || 0,
+        // Der Kartenschluessel (02.10.2026): So laesst sich der echte Gewinn
+        // eines Filters aus Kauf und Verkauf zusammensetzen (popup.js realProfitStats).
+        key: target.key || "",
         price,
         tradeId,
         // Die Karten-ID: So findet der Verkaufs-Helfer den Kauf wieder.

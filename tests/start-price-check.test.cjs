@@ -17,6 +17,10 @@ function setup({ alter = 60 * MINUTE, vorschlag = 700, entryFehlt = false, pruef
   const context = vm.createContext({
     Date, Math, Number, Array, Boolean, Infinity, Promise,
     SALE_FEE: 0.05,
+    // Seit dem FST-Modus (01.10.2026) fragt maxAutoChecks den Modus ab.
+    // Diese Tests pruefen den strengen Modus.
+    fstAn: () => false,
+    MAX_TARGETS: 10,
     history,
     targetKey: key,
     fmt: (n) => String(n),

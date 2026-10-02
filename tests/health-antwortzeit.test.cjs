@@ -46,8 +46,10 @@ test('der Coin-Stand wird nur ueber setCredits gesetzt', () => {
 
 test('der Zeitstempel geht mit dem Status an die Oberflaeche', () => {
   // Der Stand allein nuetzt nichts, wenn sein Alter unterwegs verlorengeht.
-  const statusTeil = source.slice(source.indexOf('  function status()'));
-  assert.match(statusTeil.slice(0, 4000), /credits: STATE\.credits,\s*\n\s*creditsAt: STATE\.creditsAt/);
+  // Bis zur naechsten Funktion statt einer festen Laenge - das Status-Objekt waechst.
+  const von = source.indexOf('  function status()');
+  const statusTeil = source.slice(von, source.indexOf('\n  function ', von + 1));
+  assert.match(statusTeil, /credits: STATE\.credits,\s*\n\s*creditsAt: STATE\.creditsAt/);
 });
 
 test('die Oberflaeche kennzeichnet einen alten Stand', () => {

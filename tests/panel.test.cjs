@@ -310,8 +310,9 @@ test('die grossen Seitenwerte gewinnen im umgeschriebenen Stylesheet', () => {
   // Datei und muss deshalb gewinnen - sonst waere die Schrift wieder winzig.
   const s = setup();
   const neu = vm.runInContext('stylesheetUmschreiben(css)', Object.assign(s.context, { css: designCss }));
-  const erst = neu.indexOf('--fs-base: 12px');
-  const dann = neu.indexOf('--fs-base: 15px');
+  // Seit 30.09.2026: Popup 13px, Leiste 14px (popup-design.css).
+  const erst = neu.indexOf('--fs-base: 13px');
+  const dann = neu.indexOf('--fs-base: 14px');
   assert.ok(erst >= 0 && dann > erst, 'kleine Werte zuerst, grosse danach');
 });
 
