@@ -6914,7 +6914,9 @@ function marktDetailOeffnen() {
   const g = (letzterStatus && letzterStatus.gedaechtnis) || null;
   if ($("markt-gedaechtnis")) {
     $("markt-gedaechtnis").textContent = g ? fmt(g.karten) + " Karten" : "–";
-    $("markt-gedaechtnis").title = "Jede Suche bringt bis zu 21 Angebote mit. Der Bot hebt sie auf: billigster je gesehener Preis, Mittelwert und wie oft eine Karte auftaucht. Das kostet keine einzige zusätzliche Anfrage.";
+    // Handsuchen (02.10.2026): auch die eigenen Suchen des Nutzers fuellen das
+    // Gedaechtnis - ohne Anfrage. Die Zahl zeigt, ob das Mitlesen greift.
+    $("markt-gedaechtnis").title = "Jede Suche bringt bis zu 21 Angebote mit. Der Bot hebt sie auf: billigster je gesehener Preis, Mittelwert und wie oft eine Karte auftaucht. Das kostet keine einzige zusätzliche Anfrage." + (letzterStatus && letzterStatus.handsuche && letzterStatus.handsuche.suchen > 0 ? " Dazu kommen " + fmt(letzterStatus.handsuche.suchen) + " deiner eigenen Suchen in der Web App, nur mitgelesen." : "");
   }
   $("markt-naechstes").textContent = stand.naechstes || "noch unbekannt";
   // Ehrlicher Hinweis (27.09.2026): Wir kennen nur Zeiten, in denen schon

@@ -2398,7 +2398,13 @@
   }
 
   async function appAnfrage(weg) {
+    // Handsuchen mitlesen (02.10.2026): Die eigene App-Suche darf nicht als
+    // Handsuche des Nutzers zurueckkommen - zweite Sicherung neben der
+    // Markierung in sniffer.js. seitenFrage loest immer auf (spaetestens nach
+    // der Frist mit null), die Vormerkung endet also sicher.
+    const vormerkung = handsucheBotVormerken(weg);
     const antwort = await seitenFrage(weg.typ, Object.assign({ nurSuchseite: suchseitePflicht() }, weg.daten), CONFIG.REQUEST_TIMEOUT_MS);
+    vormerkung();
     if (!antwort) throw new Error("Keine Antwort von EA nach " + Math.round(CONFIG.REQUEST_TIMEOUT_MS / 1000) + " s.");
     // Die Suchseite war zu. Das ist kein Netzfehler, sondern ein klarer Stopp.
     if (antwort.suchseite === false) throw new HardStop(SUCHSEITE_ZU);
@@ -2777,6 +2783,179 @@
       GEDAECHTNIS.puffer.set(key, e);
     }
     gedaechtnisVielleichtSichern();
+  }
+
+  // --- Eigene Suchen des Nutzers mitlesen (02.10.2026) -----------------------
+  //
+  // Sucht der Nutzer selbst in der Web App, schickt EA dieselben Angebote, die
+  // der Bot sonst mit eigenen Anfragen holt. sniffer.js liest die Antwort mit
+  // ("marktsuche"), und hier landet sie in gedaechtnisMerken - Preis-
+  // Gedaechtnis, Markt-Verlauf (Radar) und Verkaufserkennung bekommen Daten
+  // fuer 0 zusaetzliche EA-Anfragen.
+  //
+  // Die Meldung kommt aus der Seite, also aus fremdem Code. Darum wird alles
+  // noch einmal geprueft, obwohl sniffer.js schon gesaeubert hat: Herkunft,
+  // Adresse, Felder, Zahlenbereiche und Menge.
+  //
+  // Nicht doppelt zaehlen: Direkte Bot-Suchen laufen per fetch aus dieser
+  // isolierten Welt und sind fuer sniffer.js unsichtbar - zur Sicherheit wird
+  // jede Adresse aus EIGENE_ADRESSEN trotzdem verworfen. App-Suchen des Bots
+  // markiert sniffer.js beim Oeffnen; dazu merkt appAnfrage hier den Spieler
+  // vor (zweite Sicherung, mit 3 s Nachlauf).
+  const HANDSUCHE = { suchen: 0, angebote: 0, leer: 0, verworfen: 0, ohneErkennung: 0, grund: "", at: 0, zeiten: [], zuletzt: new Map(), bot: [], timer: null };
+  const HANDSUCHE_MAX_ANGEBOTE = 50;
+  const HANDSUCHE_MAX_PRO_MIN = 30;
+  const HANDSUCHE_NACHLAUF_MS = 3000;
+  const HANDSUCHE_GLEICH_MS = 60000;
+  // Notbremse wie in sniffer.js: Eine Vormerkung, deren Ende nie kam, sperrt
+  // hoechstens 30 s - laenger wartet appAnfrage ohnehin nicht.
+  const HANDSUCHE_BOT_MAX_MS = 30000;
+
+  function handsucheBotVormerken(weg) {
+    if (!weg || weg.typ !== "appSuche?") return () => {};
+    const kriterien = weg.daten && weg.daten.kriterien;
+    const eintrag = { id: toInt(kriterien && kriterien.maskedDefId) || 0, offen: true, beginn: Date.now(), ende: 0 };
+    HANDSUCHE.bot.push(eintrag);
+    if (HANDSUCHE.bot.length > 5) HANDSUCHE.bot.shift();
+    return () => {
+      eintrag.offen = false;
+      eintrag.ende = Date.now();
+    };
+  }
+
+  // Verglichen wird bewusst nur der Spieler, nicht der Preis: Ob EA maxb
+  // unveraendert in die Adresse schreibt, ist ungemessen. Eine Handsuche nach
+  // genau diesem Spieler in genau diesen Sekunden geht verloren - das kostet
+  // nichts.
+  function handsucheVomBot(id) {
+    const jetzt = Date.now();
+    return HANDSUCHE.bot.some((e) => e.id === id && (e.offen ? jetzt - e.beginn < HANDSUCHE_BOT_MAX_MS : jetzt - e.ende < HANDSUCHE_NACHLAUF_MS));
+  }
+
+  // Dieselben Grenzen wie marktAngebot in sniffer.js, aber streng: nur echte
+  // Zahlen, keine Umwandlung. rareflag nur, wenn es eine echte Zahl ist -
+  // ein umgewandeltes Feld (toInt(null) ist 0) wuerde die Karte sonst als
+  // "Common" verbuchen (siehe gedaechtnisMerken).
+  function handsucheAngebote(liste) {
+    if (!Array.isArray(liste)) return null;
+    const ganz = (v, min, max) => (typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : null);
+    const text = (v) => (typeof v === "string" ? v.slice(0, 16) : "");
+    const ziffern = (v) => (typeof v === "string" && /^\d{1,20}$/.test(v) ? v : "");
+    const out = [];
+    for (const a of liste.slice(0, HANDSUCHE_MAX_ANGEBOTE)) {
+      const item = a && typeof a === "object" ? a.itemData : null;
+      if (!item || typeof item !== "object") continue;
+      const tradeId = ziffern(a.tradeId);
+      const preis = ganz(a.buyNowPrice, 1, 15000000);
+      const assetId = ganz(item.assetId, 1, 1e9);
+      const typ = text(item.itemType);
+      // Vertraege, Fitness und Co. gehoeren nicht ins Gedaechtnis der Spieler.
+      if (!tradeId || preis === null || assetId === null || (typ && typ !== "player")) continue;
+      const ablauf = ganz(a.expires, -1, 345600);
+      const angebot = {
+        tradeId,
+        buyNowPrice: preis,
+        startingBid: ganz(a.startingBid, 0, 15000000) || 0,
+        currentBid: ganz(a.currentBid, 0, 15000000) || 0,
+        expires: ablauf === null ? 0 : ablauf,
+        tradeState: text(a.tradeState),
+        bidState: text(a.bidState),
+        itemData: {
+          id: ziffern(item.id),
+          assetId,
+          resourceId: ganz(item.resourceId, 0, 4e9) || 0,
+          rating: ganz(item.rating, 0, 99) || 0,
+          itemType: typ
+        }
+      };
+      const art = ganz(item.rareflag, 0, 10000);
+      if (art !== null) angebot.itemData.rareflag = art;
+      out.push(angebot);
+    }
+    return out;
+  }
+
+  // Taugt die Handsuche fuer die Verkaufserkennung? Dann kommt der Pfad
+  // zurueck, sonst null - Preise und Angebote zaehlen in beiden Faellen.
+  // anfrageAusPfad selbst bleibt unveraendert (Bot-Pfade laufen wie bisher);
+  // hier gilt zusaetzlich eine Erlaubt-Liste: EAs App kann Felder schicken,
+  // die anfrageAusPfad nicht kennt (z. B. micr oder zone), und jedes davon
+  // koennte falsche Verkaeufe erzeugen.
+  function handsucheErkennung(q, pfad, anzahl) {
+    const nein = (grund) => {
+      HANDSUCHE.grund = grund;
+      return null;
+    };
+    const erlaubt = ["num", "start", "type", ENDPOINTS.idParam, ENDPOINTS.maxBuyParam, ENDPOINTS.minBuyParam, ENDPOINTS.rarityParam, ENDPOINTS.ovrMinParam, ENDPOINTS.ovrMaxParam];
+    for (const name of q.keys()) {
+      if (!erlaubt.includes(name)) return nein("Feld " + str(name, 24));
+      if (q.getAll(name).length !== 1) return nein("Feld doppelt: " + str(name, 24));
+    }
+    // Nur eine Seite wie die des Bots: 20 Angebote + 1 als "es gibt mehr".
+    if (toInt(q.get("num")) !== CONFIG.PAGE_SIZE) return nein("num ist nicht " + CONFIG.PAGE_SIZE);
+    if (!(anzahl > 0)) return nein("leere Antwort");
+    // Dieselbe Adresse kurz hintereinander: EA kann eine gemerkte Antwort
+    // schicken, der ein Angebot fehlt, das der Bot inzwischen gesehen hat.
+    // Der Zeitpunkt wird jedes Mal erneuert - lieber vorsichtig.
+    const jetzt = Date.now();
+    const vorher = HANDSUCHE.zuletzt.get(pfad) || 0;
+    HANDSUCHE.zuletzt.delete(pfad);
+    HANDSUCHE.zuletzt.set(pfad, jetzt);
+    while (HANDSUCHE.zuletzt.size > 50) HANDSUCHE.zuletzt.delete(HANDSUCHE.zuletzt.keys().next().value);
+    if (vorher && jetzt - vorher < HANDSUCHE_GLEICH_MS) return nein("dieselbe Suche vor weniger als 60 s");
+    return pfad;
+  }
+
+  function handsucheUebernehmen(raw, herkunft) {
+    const weg = (grund) => {
+      HANDSUCHE.verworfen += 1;
+      HANDSUCHE.grund = grund;
+    };
+    if (herkunft !== window.location.origin) return weg("fremde Herkunft");
+    if (!raw || typeof raw !== "object") return weg("keine Daten");
+    if (!extensionAlive()) return;
+    const base = typeof raw.base === "string" ? raw.base : "";
+    const m = API_RE.exec(base);
+    if (!m || m[1] !== base) return weg("Adresse passt nicht");
+    if (SESSION.base && SESSION.base !== base) return weg("andere Sitzung");
+    const pfad = typeof raw.pfad === "string" ? raw.pfad : "";
+    if (pfad.length > 600 || !pfad.startsWith(ENDPOINTS.searchPath + "?")) return weg("keine Marktsuche");
+    if (EIGENE_ADRESSEN.includes(base + pfad)) return weg("eigene Suche des Bots");
+    const jetzt = Date.now();
+    HANDSUCHE.zeiten = HANDSUCHE.zeiten.filter((t) => jetzt - t < 60000);
+    if (HANDSUCHE.zeiten.length >= HANDSUCHE_MAX_PRO_MIN) return weg("mehr als " + HANDSUCHE_MAX_PRO_MIN + " Meldungen pro Minute");
+    HANDSUCHE.zeiten.push(jetzt);
+    let q;
+    try {
+      q = new URLSearchParams(pfad.slice(pfad.indexOf("?") + 1));
+    } catch (e) {
+      return weg("Adresse unlesbar");
+    }
+    if (q.get("type") !== "player") return weg("keine Spielersuche");
+    if (handsucheVomBot(toInt(q.get(ENDPOINTS.idParam)) || 0)) return weg("eigene App-Suche des Bots");
+    const angebote = handsucheAngebote(raw.auctionInfo);
+    if (!angebote) return weg("keine Angebotsliste");
+    if (!angebote.length) {
+      if (raw.auctionInfo.length) return weg("keine gueltigen Angebote");
+      // Eine leere Antwort kann auch EAs Drossel sein ("leere Ergebnisse" bei
+      // markierten Konten). Daraus darf kein Verkauf werden - also gar nicht
+      // erst an gedaechtnisMerken geben.
+      HANDSUCHE.leer += 1;
+      HANDSUCHE.at = jetzt;
+      return;
+    }
+    const erkennung = handsucheErkennung(q, pfad, angebote.length);
+    HANDSUCHE.suchen += 1;
+    HANDSUCHE.angebote += angebote.length;
+    if (!erkennung) HANDSUCHE.ohneErkennung += 1;
+    HANDSUCHE.at = jetzt;
+    if (HANDSUCHE.suchen === 1) log("Eigene Marktsuche mitgelesen (" + angebote.length + " Angebote, keine zusaetzliche Anfrage).");
+    gedaechtnisMerken(angebote, erkennung);
+    // Ohne Bot-Lauf kaeme sonst nichts mehr, das den Puffer schreibt - die
+    // letzten Handsuchen gingen beim Schliessen des Tabs verloren. Kostet nur
+    // einen Schreibvorgang im Speicher, keine EA-Anfrage.
+    clearTimeout(HANDSUCHE.timer);
+    HANDSUCHE.timer = setTimeout(() => gedaechtnisVielleichtSichern(), GEDAECHTNIS_SICHERN_MS + 1000);
   }
 
   // Verkaufserkennung (02.10.2026). Die Regel steht in markt.js
@@ -7731,6 +7910,12 @@
       gedaechtnis: { karten: GEDAECHTNIS.karten, offen: GEDAECHTNIS.puffer.size },
       // Verkaufserkennung (02.10.2026): seit dem Laden erkannt / gerade beobachtet.
       verkaeufe: { erkannt: VERKAUF_TRACKER.erkannt, beobachtet: VERKAUF_TRACKER.beobachtet.size },
+      // Eigene Suchen des Nutzers (02.10.2026). Kein stiller Verlust: warum
+      // eine Handsuche nicht zaehlte oder keine Verkaeufe ergab.
+      handsuche: {
+        suchen: HANDSUCHE.suchen, angebote: HANDSUCHE.angebote, leer: HANDSUCHE.leer, verworfen: HANDSUCHE.verworfen,
+        ohneErkennung: HANDSUCHE.ohneErkennung, grund: HANDSUCHE.grund, at: HANDSUCHE.at
+      },
       suchseite: {
         pflicht: suchseitePflicht(), offen: suchseiteOffen(), seite: SUCHSEITE.seite, at: SUCHSEITE.at,
         rarity: SUCHSEITE.rarity, rarityName: SUCHSEITE.rarityName
@@ -8580,6 +8765,14 @@
     // EAs Kontouebersicht, nur mitgelesen - keine eigene Anfrage (25.09.2026).
     if (data.__ownbot === "konto") {
       kontoUebernehmen(data);
+      return;
+    }
+
+    // Eigene Marktsuche des Nutzers, nur mitgelesen (02.10.2026). Die Herkunft
+    // wird nur hier geprueft, nicht fuer den ganzen Hoerer: Die uebrigen
+    // Meldungen laufen unveraendert weiter wie bisher.
+    if (data.__ownbot === "marktsuche") {
+      handsucheUebernehmen(data, event.origin);
       return;
     }
 
