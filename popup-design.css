@@ -5088,3 +5088,32 @@ select:focus {
 @media (prefers-reduced-motion: reduce) {
   .assistent-fortschritt > i { transition: none; }
 }
+
+/* --- Markt-Radar (02.10.2026): Umschalter, Auto-Haken, Zeilenarten --- */
+.radar-auto { margin: .6rem 0 0; font-size: .8rem; }
+.radar-auto-hint { margin-top: 0; font-size: var(--fs-xs); }
+.segmented.radar-wahl { display: flex; margin: .7rem 0 0; padding: 3px; gap: 2px; }
+.segmented.radar-wahl button { flex: 1 1 0; min-width: 0; padding: 0 .15rem; font-size: .72rem; white-space: nowrap; }
+.radar-zahl {
+  display: inline-block;
+  min-width: 15px;
+  margin-left: 3px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: .6rem;
+  font-weight: 700;
+  line-height: 15px;
+  vertical-align: 1px;
+}
+.segmented.radar-wahl button.active .radar-zahl { background: var(--accent); color: var(--accent-ink); }
+.radar-erklaerung { margin-top: .5rem; }
+.chance-gewinn.info { color: var(--accent); }
+.chance-gewinn.minus { color: var(--red); }
+.chance[data-art="bestseller"] { border-left-color: var(--accent); }
+.chance[data-art="guenstig"] { border-left-color: var(--green); }
+.chance[data-art="steigend"] { border-left-color: var(--green); }
+.chance[data-art="fallend"] { border-left-color: var(--red); }
+.chance[data-art="bestseller"] .chance-spark polyline { stroke: var(--accent); }
+.chance[data-art="fallend"] .chance-spark polyline { stroke: var(--red); }

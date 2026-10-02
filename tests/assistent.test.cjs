@@ -118,3 +118,14 @@ test('waehrend einer EA-Pause oder ohne Sitzung wird kein Markt-Scan angeboten',
   assert.ok(!knoepfe(basis({ session: false })).includes('scan'));
   assert.ok(!knoepfe(basis({ laeuft: true })).includes('scan'));
 });
+
+test('ohne Chancen, aber mit Bestsellern nennt der Assistent die gefragteste Karte', () => {
+  const z = basis({ bestseller: [{ name: 'Salah', verkaeufe: 12, verkaufsPreis: 31000 }], daten: { reif: 3 } });
+  const h = A.lage(z).find((x) => x.id === 'bestseller');
+  assert.ok(h);
+  assert.match(h.text, /12-mal/);
+  assert.match(h.text, /31\.000/);
+  assert.equal(h.aktionen[0].id, 'bestseller');
+  const mitChance = basis({ bestseller: [{ name: 'Salah', verkaeufe: 12 }], chancen: [{ name: 'X', kaufBis: 1, ziel: 2, gewinn: 3 }] });
+  assert.ok(!A.lage(mitChance).some((x) => x.id === 'bestseller'), 'Chancen gehen vor');
+});

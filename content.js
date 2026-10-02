@@ -2652,8 +2652,9 @@
   // (120 Sekunden) wurde nur gefuellt und nirgends gelesen.
   const GEDAECHTNIS_ANKER_AB_S = 300;
 
-  function gedaechtnisMerken(auctions) {
+  function gedaechtnisMerken(auctions, pfad) {
     if (!Array.isArray(auctions)) return;
+    verkaeufeErkennen(auctions, pfad);
     for (const a of auctions) {
       const preis = Number(a && a.buyNowPrice) || 0;
       const item = a && a.itemData;
@@ -2689,6 +2690,84 @@
     gedaechtnisVielleichtSichern();
   }
 
+  // Verkaufserkennung (02.10.2026). Die Regel steht in markt.js
+  // (verkaeufeAbgleichen): Ein Angebot laesst sich auf dem FUT-Markt nicht
+  // zurueckziehen - fehlt es vor seinem Ablauf in einer vollstaendigen Antwort,
+  // wurde es gekauft. Daraus werden "Bestseller" und echte Verkaufspreise.
+  // Kostet keine EA-Anfrage: Es werden nur Antworten verglichen, die der Bot
+  // sowieso bekommt.
+  const VERKAUF_TRACKER = { beobachtet: new Map(), puffer: [], letzteSicherung: 0, erkannt: 0 };
+  const VERKAUF_SICHERN_MS = 60000;
+
+  // Was hat die Suche gefragt? Nur Spieler-Suchen ohne weitere Filter taugen
+  // fuer den Abgleich - Liga oder Position sieht man einem Angebot nicht an.
+  function anfrageAusPfad(pfad, anzahl) {
+    if (typeof pfad !== "string" || pfad.indexOf("?") < 0) return null;
+    let q;
+    try {
+      q = new URLSearchParams(pfad.slice(pfad.indexOf("?") + 1));
+    } catch (e) {
+      return null;
+    }
+    for (const [, endpunkt] of SCAN_FILTER_FELDER) {
+      if (endpunkt !== "rarityParam" && ENDPOINTS[endpunkt] && q.has(ENDPOINTS[endpunkt])) return null;
+    }
+    const zahl = (name) => toInt(q.get(ENDPOINTS[name])) || 0;
+    const arten = q.get(ENDPOINTS.rarityParam);
+    return {
+      playerId: zahl("idParam"),
+      maxb: zahl("maxBuyParam"),
+      minb: zahl("minBuyParam"),
+      ovrMin: zahl("ovrMinParam"),
+      ovrMax: zahl("ovrMaxParam"),
+      rarities: arten ? arten.split(",").map((x) => toInt(x)).filter((x) => Number.isFinite(x)) : null,
+      start: toInt(q.get("start")) || 0,
+      // Eine Gebotssuche filtert nach dem Gebot, nicht nach dem Sofortkauf.
+      vollstaendig: anzahl < volleSeite() && !q.has(ENDPOINTS.maxBidParam)
+    };
+  }
+
+  function verkaeufeErkennen(auctions, pfad) {
+    const M = typeof FC27Markt === "object" ? FC27Markt : null;
+    if (!M) return;
+    const jetzt = Date.now();
+    const angebote = [];
+    for (const a of auctions) {
+      const item = a && a.itemData;
+      const preis = Number(a && a.buyNowPrice) || 0;
+      const rest = Number(a && a.expires);
+      if (!item || !(preis > 0) || a.tradeId == null || !(rest > 0)) continue;
+      const assetId = toInt(item.assetId) || 0;
+      if (!assetId) continue;
+      const art = typeof item.rareflag === "number" && Number.isFinite(item.rareflag) ? Math.floor(item.rareflag) : -1;
+      const rating = toInt(item.rating) || 0;
+      angebote.push({
+        tradeId: String(a.tradeId), key: priceKey(assetId, rating, art), playerId: basePlayerId(item),
+        rarity: art, rating, preis, endetAt: jetzt + rest * 1000
+      });
+    }
+    const neu = M.verkaeufeAbgleichen(VERKAUF_TRACKER.beobachtet, anfrageAusPfad(pfad, auctions.length), angebote, jetzt);
+    if (neu.length) {
+      VERKAUF_TRACKER.puffer.push(...neu);
+      VERKAUF_TRACKER.erkannt += neu.length;
+    }
+    if (VERKAUF_TRACKER.puffer.length >= 20 || (VERKAUF_TRACKER.puffer.length && jetzt - VERKAUF_TRACKER.letzteSicherung >= VERKAUF_SICHERN_MS)) {
+      verkaeufeSichern();
+    }
+  }
+
+  function verkaeufeSichern() {
+    const M = typeof FC27Markt === "object" ? FC27Markt : null;
+    const neu = VERKAUF_TRACKER.puffer;
+    VERKAUF_TRACKER.puffer = [];
+    VERKAUF_TRACKER.letzteSicherung = Date.now();
+    if (!M || !neu.length) return Promise.resolve();
+    return updateStorage("marktVerkaeufe", (current) => {
+      const alle = current && typeof current === "object" && current.karten && typeof current.karten === "object" ? current.karten : {};
+      return { v: 1, at: Date.now(), karten: M.verkaeufeEintragen(alle, neu, Date.now()) };
+    });
+  }
+
   function gedaechtnisVielleichtSichern() {
     if (!GEDAECHTNIS.puffer.size) return;
     const eilig = GEDAECHTNIS.puffer.size >= GEDAECHTNIS_PUFFER_MAX;
@@ -2700,6 +2779,7 @@
     const puffer = GEDAECHTNIS.puffer;
     GEDAECHTNIS.puffer = new Map();
     GEDAECHTNIS.letzteSicherung = Date.now();
+    verkaeufeSichern();
     if (!puffer.size) return Promise.resolve();
     marktVerlaufSichern(puffer);
     return updateStorage("preisGedaechtnis", (current) => {
@@ -3323,12 +3403,13 @@
       }
       if (!alive()) throw new Error("abgebrochen.");
       check.searches += 1;
-      const res = await api(searchPath(player.playerId, maxPrice, start, false, player.rating, 0, player.rarity));
+      const pfad = searchPath(player.playerId, maxPrice, start, false, player.rating, 0, player.rarity);
+      const res = await api(pfad);
       if (!res.ok) throw new Error("Suche: HTTP " + res.status);
       const data = await res.json();
       STATE.rateLimitHits = 0;
       const liste = data && Array.isArray(data.auctionInfo) ? data.auctionInfo.filter(Boolean) : [];
-      gedaechtnisMerken(liste);
+      gedaechtnisMerken(liste, pfad);
       return liste;
     }
 
@@ -3498,7 +3579,7 @@
       const data = await res.json();
       STATE.rateLimitHits = 0;
       const liste = data && Array.isArray(data.auctionInfo) ? data.auctionInfo.filter(Boolean) : [];
-      gedaechtnisMerken(liste);
+      gedaechtnisMerken(liste, path);
       antworten.set(path, liste);
       return liste;
     }
@@ -4683,6 +4764,7 @@
   async function sucheMitStundenPause(target, run, jitterMin, jitterMax) {
     const obergrenze = Number(jitterMax) >= Number(target.maxPrice) ? Number(jitterMax) : Number(target.maxPrice);
     const pfad = searchPath(target.playerId, obergrenze, 0, run.cfg.bidSniping, target.rating, jitterMin, target.rarity);
+    run.letzterSuchPfad = pfad; // fuer die Verkaufserkennung (gedaechtnisMerken)
     try {
       return await api(pfad);
     } catch (e) {
@@ -4752,7 +4834,7 @@
     if (data && typeof data.credits === "number") setCredits(data.credits);
     const auctions = data && Array.isArray(data.auctionInfo) ? data.auctionInfo.filter(Boolean) : [];
     noteItemFields(auctions);
-    gedaechtnisMerken(auctions); // kostet nichts: die Angebote sind schon da
+    gedaechtnisMerken(auctions, run.letzterSuchPfad); // kostet nichts: die Angebote sind schon da
     // Marktaktivitaet aus zwei Laufsuchen desselben Spielers (27.09.2026).
     // Kostet ebenfalls keine Anfrage: Die Angebote liegen schon vor.
     // Uebergeben wird genau das Preisfenster, mit dem wirklich gesucht wurde -
@@ -7304,6 +7386,8 @@
       // "suchweg" oben sagt, was EINGESTELLT ist - das ist nicht dasselbe.
       suchwegStat: { app: SUCHWEG_STAT.app, direkt: SUCHWEG_STAT.direkt, grund: SUCHWEG_STAT.grund },
       gedaechtnis: { karten: GEDAECHTNIS.karten, offen: GEDAECHTNIS.puffer.size },
+      // Verkaufserkennung (02.10.2026): seit dem Laden erkannt / gerade beobachtet.
+      verkaeufe: { erkannt: VERKAUF_TRACKER.erkannt, beobachtet: VERKAUF_TRACKER.beobachtet.size },
       suchseite: {
         pflicht: suchseitePflicht(), offen: suchseiteOffen(), seite: SUCHSEITE.seite, at: SUCHSEITE.at,
         rarity: SUCHSEITE.rarity, rarityName: SUCHSEITE.rarityName

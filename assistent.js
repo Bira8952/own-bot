@@ -50,6 +50,7 @@
     webapp: "Web App öffnen",
     stopp: "Stoppen",
     chancen: "Chancen ansehen",
+    bestseller: "Bestseller ansehen",
     snipen: "Spieler wählen",
     scan: "Markt scannen"
   };
@@ -178,6 +179,15 @@
       add("chancen", "gut", chancen.length === 1 ? "1 Chance gefunden" : chancen.length + " Chancen gefunden",
         "Beste: " + b.name + " – kaufen bis " + zahl(b.kaufBis) + ", Ziel " + zahl(b.ziel) +
         ", etwa +" + zahl(b.gewinn) + " Coins.", [aktion("chancen")]);
+    }
+
+    const bestseller = Array.isArray(s.bestseller) ? s.bestseller : [];
+    if (!chancen.length && bestseller.length) {
+      const b = bestseller[0];
+      add("bestseller", "info", "Gerade gefragt: " + b.name,
+        b.name + " wurde in den letzten 3 Stunden " + zahl(b.verkaeufe) + "-mal verkauft" +
+        (b.verkaufsPreis > 0 ? ", meist für etwa " + zahl(b.verkaufsPreis) + " Coins" : "") + ".",
+        [aktion("bestseller")]);
     }
 
     if (!s.laeuft && !(s.ziele > 0)) {

@@ -253,6 +253,17 @@ const CHANCEN_MAX = 10;
 const CHANCEN_NEU_MS = 60000; // die Rangliste haengt an der Uhr (Frische) - einmal pro Minute reicht
 const SVG_NS = "http://www.w3.org/2000/svg";
 let marktVerlauf = {};
+let marktVerkaeufe = {}; // erkannte Verkaeufe aus content.js: { key: [[t, preis], ...] }
+let radarListe = "chancen"; // offene Rangliste im Radar
+let radarDaten = { bestseller: [], guenstig: [], steigend: [], fallend: [] };
+// Ein Satz je Rangliste (Radar).
+const RADAR_ERKLAERUNG = {
+  chancen: "Unter ihrem üblichen Preis und vermutlich bald wieder teurer – mit Gewinn nach 5 % Gebühr.",
+  bestseller: "Am meisten verkauft in den letzten 3 Stunden – erkannt an Angeboten, die vor ihrem Ablauf verschwunden sind.",
+  guenstig: "Gerade am weitesten unter ihrem üblichen Preis.",
+  steigend: "In der letzten Stunde am stärksten gestiegen.",
+  fallend: "In der letzten Stunde am stärksten gefallen – kaufen erst, wenn der Fall aufhört."
+};
 let chancen = [];
 let chancenAt = 0;
 let chancenStand = { karten: 0, reif: 0, fortschritt: 0 };
@@ -3284,7 +3295,7 @@ function renderTargets(force, notiz) {
         flag.className = "target-flag";
         flag.textContent = "abgelaufen";
         row.title = t.source === "chance"
-          ? "Die Chance ist älter als 30 Minuten. Der Lauf überspringt sie. Unter „Chancen“ siehst du, ob sie noch gilt."
+          ? "Die Chance ist älter als 30 Minuten. Der Lauf überspringt sie. Unter „Radar“ siehst du, ob sie noch gilt."
           : "Der Live-Filter ist älter als 15 Minuten. Der Lauf überspringt ihn. Unter „Filter“ kannst du ihn erneuern.";
         name.append(flag);
       } else if (preisAelter[index]) {
@@ -3307,7 +3318,7 @@ function renderTargets(force, notiz) {
         const flag = document.createElement("small");
         flag.className = "target-flag chance-flag";
         flag.textContent = "Chance · Ziel " + fmt(t.salePrice);
-        row.title = "Aus „Chancen“: kaufen bis " + fmt(t.maxPrice) + ", verkaufen um " + fmt(t.salePrice) +
+        row.title = "Aus dem Radar: kaufen bis " + fmt(t.maxPrice) + ", verkaufen um " + fmt(t.salePrice) +
           ", wenn sich der Preis erholt. Gilt bis " + hhmm(t.expiresAt) + ".";
         name.append(flag);
       }
@@ -3390,7 +3401,7 @@ function renderTargets(force, notiz) {
     const nurChancen = weg.every((t) => t.source === "chance");
     warnungen.push("Abgelaufen: " + weg.map((t) => t.playerName).join(", ") +
       (nurChancen
-        ? ". Der Lauf überspringt " + (weg.length === 1 ? "diese Chance" : "diese Chancen") + " – unter „Chancen“ siehst du, was noch gilt."
+        ? ". Der Lauf überspringt " + (weg.length === 1 ? "diese Chance" : "diese Chancen") + " – unter „Radar“ siehst du, was noch gilt."
         : ". Der Lauf überspringt " + (weg.length === 1 ? "diesen Live-Filter" : "diese Live-Filter") + " – unter „Filter“ kannst du erneuern."));
   }
   if (preisAelter.some(Boolean)) {
@@ -7726,7 +7737,7 @@ async function startRun(onlyTargets, lauf) {
     if (!list.length) {
       notice = expired.every((t) => t.source === "chance")
         ? (expired.length === 1 ? "Die Chance für " + expired[0].playerName + " ist" : "Alle Chancen sind") +
-          " abgelaufen. Unter „Chancen“ siehst du, was noch gilt."
+          " abgelaufen. Unter „Radar“ siehst du, was noch gilt."
         : (expired.length === 1 ? "Der Live-Filter für " + expired[0].playerName + " ist" : "Alle Live-Filter sind") +
           " abgelaufen. Erneuere " + (expired.length === 1 ? "ihn" : "sie") + " unter „Filter“.";
       render(lastRes || { ok: false, error: notice });
@@ -8086,12 +8097,12 @@ function startPruefung(alleZiele, lauf) {
   if (!list.length) {
     blockers.push(weg.length
       ? (weg.every((t) => t.source === "chance")
-        ? "Alle Chancen in der Liste sind abgelaufen. Unter „Chancen“ siehst du, was noch gilt."
+        ? "Alle Chancen in der Liste sind abgelaufen. Unter „Radar“ siehst du, was noch gilt."
         : "Alle Live-Filter in der Liste sind abgelaufen. Erneuere sie unter „Filter“.")
       : "Kein Spieler gewählt.");
   } else if (weg.length) {
     warnings.push("Abgelaufen, wird übersprungen: " + weg.map((t) => t.playerName).join(", ") +
-      (weg.every((t) => t.source === "chance") ? ". Unter „Chancen“ siehst du, was noch gilt." : ". Unter „Filter“ kannst du erneuern."));
+      (weg.every((t) => t.source === "chance") ? ". Unter „Radar“ siehst du, was noch gilt." : ". Unter „Filter“ kannst du erneuern."));
   }
   // FST-Modus (Punkt 3): Kein Ablauf, keine Sperre - nur eine gelbe Warnung.
   // (Die Pruefung steht hier ausgeschrieben: dieser Block laeuft in Tests ohne
@@ -9863,43 +9874,67 @@ function spielerFuer(id) {
 }
 
 async function loadMarkt() {
-  let roh = null;
+  let roh = {};
   try {
-    roh = (await chrome.storage.local.get("marktVerlauf")).marktVerlauf;
+    roh = await chrome.storage.local.get(["marktVerlauf", "marktVerkaeufe"]);
   } catch (e) {
-    roh = null;
+    roh = {};
   }
-  marktVerlauf = roh && typeof roh === "object" && roh.karten && typeof roh.karten === "object" ? roh.karten : {};
+  const karten = (x) => (x && typeof x === "object" && x.karten && typeof x.karten === "object" ? x.karten : {});
+  marktVerlauf = karten(roh.marktVerlauf);
+  marktVerkaeufe = karten(roh.marktVerkaeufe);
   chancenRechnen();
   renderChancen();
   renderAssistent();
+}
+
+// Spielername, Bestandteile des Schluessels und Verlauf an eine Karte haengen.
+function karteAnreichern(key, extra) {
+  const teile = MARKT.keyTeilen(key) || { playerId: 0, rating: 0, rarity: "" };
+  const spieler = spielerFuer(teile.playerId);
+  const verlauf = Array.isArray(marktVerlauf[key]) ? marktVerlauf[key] : [];
+  return Object.assign({ key }, extra, teile, { name: spieler ? spieler.name : "Spieler " + teile.playerId, verlauf });
 }
 
 function chancenRechnen() {
   chancenAt = Date.now();
   if (!MARKT) {
     chancen = [];
+    radarDaten = { bestseller: [], guenstig: [], steigend: [], fallend: [] };
     return;
   }
   chancenStand = MARKT.datenStand(marktVerlauf);
   chancen = MARKT.rangliste(marktVerlauf, { jetzt: chancenAt }).slice(0, CHANCEN_MAX).map((c) => {
-    const teile = MARKT.keyTeilen(c.key) || { playerId: 0, rating: 0, rarity: "" };
-    const spieler = spielerFuer(teile.playerId);
-    const verlauf = Array.isArray(marktVerlauf[c.key]) ? marktVerlauf[c.key] : [];
-    const preisAt = verlauf.length ? verlauf[verlauf.length - 1][0] : chancenAt;
+    const k = karteAnreichern(c.key, c);
+    const preisAt = k.verlauf.length ? k.verlauf[k.verlauf.length - 1][0] : chancenAt;
     // Auf die Preisleiter von EA abrunden - so kauft der Bot auch wirklich.
     const kaufBis = roundDownToStep(c.kauf);
     const gewinn = MARKT.gewinn(kaufBis, c.ziel);
-    return Object.assign({}, c, teile, {
-      name: spieler ? spieler.name : "Spieler " + teile.playerId,
-      kaufBis,
+    return Object.assign(k, { kaufBis, gewinn, marge: kaufBis > 0 ? gewinn / kaufBis : 0, preisAt, bis: preisAt + MARKT.FRISCH_MS });
+  });
+  // Die vier Preis- und Verkaufslisten. Jede Karte bekommt gleich einen
+  // Snipe-Plan (Snipen bis / Ziel), damit der Knopf in der Zeile weiss, was er tut.
+  const r = MARKT.radar(marktVerlauf, marktVerkaeufe, chancenAt, { max: CHANCEN_MAX });
+  const anreichern = (k) => {
+    const plan = MARKT.snipePlan(k);
+    const kaufBis = plan ? roundDownToStep(plan.kaufBis) : 0;
+    const gewinn = plan ? MARKT.gewinn(kaufBis, plan.ziel) : 0;
+    const preisAt = k.gesehenAt || chancenAt;
+    return karteAnreichern(k.key, Object.assign({}, k, {
+      ziel: plan ? plan.ziel : 0,
+      kaufBis: plan && gewinn > 0 && kaufBis >= VERKAUF_MIN_PREIS ? kaufBis : 0,
       gewinn,
       marge: kaufBis > 0 ? gewinn / kaufBis : 0,
       preisAt,
-      bis: preisAt + MARKT.FRISCH_MS,
-      verlauf
-    });
-  });
+      bis: Math.max(preisAt, chancenAt) + MARKT.FRISCH_MS
+    }));
+  };
+  radarDaten = {
+    bestseller: r.bestseller.map(anreichern),
+    guenstig: r.guenstig.map(anreichern),
+    steigend: r.steigend.map(anreichern),
+    fallend: r.fallend.map(anreichern)
+  };
 }
 
 function chancenFrisch() {
@@ -9919,10 +9954,51 @@ function chanceSpark(c) {
   return svg;
 }
 
-function chanceZeile(c, schonDrauf, laeuft) {
+function vorzeichenProzent(x) {
+  const p = Math.round(x * 100);
+  return (p > 0 ? "+" : p < 0 ? "−" : "") + Math.abs(p) + " %";
+}
+
+function vorMin(t) {
+  const min = Math.max(0, Math.round((Date.now() - t) / 60000));
+  return min < 1 ? "gerade eben" : min < 60 ? "vor " + min + " Min." : "vor " + Math.round(min / 60) + " Std.";
+}
+
+// Was eine Zeile je Rangliste zeigt: grosse Zahl rechts, drei Felder, ein Satz.
+function radarAnsicht(c, liste) {
+  if (liste === "chancen") {
+    return {
+      gross: "+" + fmt(c.gewinn), grossTitel: "Gewinn nach 5 % EA-Gebühr, wenn der Preis zum Ziel zurückkehrt", ton: "plus",
+      unter: [c.art === "dip" ? "Dip" : "steigt", c.alterMin > 0 ? "gesehen vor " + c.alterMin + " Min." : "gerade gesehen"],
+      felder: [["Kaufen bis", fmt(c.kaufBis)], ["Ziel", fmt(c.ziel)], ["Gewinn", Math.round(c.marge * 100) + " %"]],
+      satz: c.grund + "."
+    };
+  }
+  const felder = [["Jetzt", c.aktuell ? fmt(c.aktuell) : "–"], ["Üblich", c.ueblich ? fmt(c.ueblich) : "–"], ["Verkauft für", c.verkaufsPreis ? fmt(c.verkaufsPreis) : "–"]];
+  const satz = c.kaufBis > 0
+    ? "Snipen bis " + fmt(c.kaufBis) + ", verkaufen um " + fmt(c.ziel) + " – etwa +" + fmt(c.gewinn) + " Coins nach Gebühr."
+    : "Mit 5 % Gebühr bleibt hier gerade kein sicherer Gewinn.";
+  const gesehen = c.gesehenAt ? "gesehen " + vorMin(c.gesehenAt) : "";
+  if (liste === "bestseller") {
+    return {
+      gross: fmt(c.verkaeufe) + "×", grossTitel: "Erkannte Verkäufe in den letzten 3 Stunden", ton: "info",
+      unter: [String(c.verkaeufeStunde).replace(".", ",") + " pro Std.", gesehen], felder, satz
+    };
+  }
+  const wert = liste === "guenstig" ? c.abweichung : c.aenderung;
+  return {
+    gross: vorzeichenProzent(wert),
+    grossTitel: liste === "guenstig" ? "Abstand zum üblichen Preis" : "Änderung seit einer Stunde",
+    ton: wert < 0 ? (liste === "guenstig" ? "plus" : "minus") : "plus",
+    unter: [c.verkaeufe ? c.verkaeufe + " verkauft (3 Std.)" : "", gesehen], felder, satz
+  };
+}
+
+function chanceZeile(c, liste, schonDrauf, laeuft) {
+  const a = radarAnsicht(c, liste);
   const row = document.createElement("article");
   row.className = "chance";
-  row.dataset.art = c.art;
+  row.dataset.art = liste === "chancen" ? c.art : liste;
 
   const kopf = document.createElement("div");
   kopf.className = "chance-kopf";
@@ -9931,21 +10007,19 @@ function chanceZeile(c, schonDrauf, laeuft) {
   const titel = document.createElement("b");
   titel.textContent = c.name;
   const unter = document.createElement("small");
-  unter.textContent = [
-    c.rating ? "Rating " + c.rating : "",
-    c.art === "dip" ? "Dip" : "steigt",
-    c.alterMin > 0 ? "gesehen vor " + c.alterMin + " Min." : "gerade gesehen"
-  ].filter(Boolean).join(" · ");
+  unter.textContent = [c.rating ? "Rating " + c.rating : ""].concat(a.unter).filter(Boolean).join(" · ");
   name.append(titel, unter);
-  const plus = document.createElement("span");
-  plus.className = "chance-gewinn";
-  plus.textContent = "+" + fmt(c.gewinn);
-  plus.title = "Gewinn nach 5 % EA-Gebühr, wenn der Preis zum Ziel zurückkehrt";
-  kopf.append(portrait(c.playerId, c.name), name, plus);
+  const gross = document.createElement("span");
+  gross.className = "chance-gewinn " + a.ton;
+  gross.textContent = a.gross;
+  gross.title = a.grossTitel;
+  kopf.append(portrait(c.playerId, c.name), name, gross);
+  row.append(kopf);
+  if (c.verlauf && c.verlauf.length >= 2) row.append(chanceSpark(c));
 
   const zahlen = document.createElement("div");
   zahlen.className = "chance-zahlen";
-  for (const [label, wert] of [["Kaufen bis", fmt(c.kaufBis)], ["Ziel", fmt(c.ziel)], ["Gewinn", Math.round(c.marge * 100) + " %"]]) {
+  for (const [label, wert] of a.felder) {
     const feld = document.createElement("div");
     const l = document.createElement("span");
     l.textContent = label;
@@ -9954,45 +10028,113 @@ function chanceZeile(c, schonDrauf, laeuft) {
     feld.append(l, w);
     zahlen.append(feld);
   }
-
-  const grund = document.createElement("p");
-  grund.className = "chance-grund";
-  grund.textContent = c.grund + ".";
+  const satz = document.createElement("p");
+  satz.className = "chance-grund";
+  satz.textContent = a.satz;
 
   const knopf = document.createElement("button");
   knopf.type = "button";
-  knopf.className = schonDrauf ? "secondary chance-knopf drauf" : "go chance-knopf";
-  knopf.textContent = schonDrauf ? "Auf deiner Liste ✓" : "Auf meine Liste";
-  knopf.disabled = schonDrauf || laeuft;
+  const moeglich = c.kaufBis > 0;
+  knopf.className = schonDrauf ? "secondary chance-knopf drauf" : moeglich ? "go chance-knopf" : "secondary chance-knopf";
+  knopf.textContent = schonDrauf ? "Auf deiner Liste ✓"
+    : liste === "chancen" ? "Auf meine Liste"
+      : moeglich ? "Snipen bis " + fmt(c.kaufBis) : "Kein Gewinn möglich";
+  knopf.disabled = schonDrauf || laeuft || !moeglich;
   if (laeuft && !schonDrauf) knopf.title = "Während der Bot läuft, bleibt die Liste, wie sie ist.";
   knopf.addEventListener("click", () => chanceAufListe(c));
 
-  row.append(kopf, chanceSpark(c), zahlen, grund, knopf);
+  row.append(zahlen, satz, knopf);
   return row;
+}
+
+
+function radarLeerText(liste) {
+  if (!MARKT) return "Die Markt-Analyse ist nicht geladen. Lade die Web App neu (F5).";
+  if (liste === "bestseller") {
+    return "Noch keine Verkäufe erkannt. Der Bot sieht einen Verkauf, wenn ein Angebot zwischen zwei Suchen vor seinem Ablauf verschwindet. Mehrere Markt-Scans im Abstand von ein paar Minuten bringen die ersten Zahlen.";
+  }
+  if (!(chancenStand.reif > 0)) {
+    return "Der Bot lernt noch die Preise. Jede Suche füllt den Verlauf, nach etwa einer Stunde erkennt er die ersten Bewegungen. Ein Markt-Scan beschleunigt das.";
+  }
+  return liste === "chancen"
+    ? "Gerade ist keine Karte günstig genug. Der Bot schaut bei jeder Suche weiter – fällt ein Preis, steht die Karte hier."
+    : "Gerade bewegt sich hier nichts Nennenswertes (unter 3 %). Der Bot schaut bei jeder Suche weiter.";
+}
+
+function radarEintraege(liste) {
+  return liste === "chancen" ? chancen : radarDaten[liste] || [];
+}
+
+function verkaeufeLetzteStunde() {
+  const grenze = Date.now() - 60 * 60 * 1000;
+  let n = 0;
+  for (const v of Object.values(marktVerkaeufe)) if (Array.isArray(v)) for (const p of v) if (p[0] > grenze) n += 1;
+  return n;
 }
 
 function renderChancen() {
   const liste = $("chancen-liste");
   if (!liste) return;
+  const eintraege = radarEintraege(radarListe);
   const aufListe = new Set(targets.map(targetKey));
   const laeuft = isRunning();
-  const key = JSON.stringify([chancen.map((c) => [c.key, c.kaufBis, c.ziel, c.alterMin, c.name]), [...aufListe], laeuft, chancenStand, Boolean(images)]);
+  const verkauft = verkaeufeLetzteStunde();
+  const key = JSON.stringify([radarListe, eintraege.map((c) => [c.key, c.kaufBis, c.ziel, c.alterMin, c.name, c.aktuell, c.verkaeufe, c.gesehenAt]),
+    [...aufListe], laeuft, chancenStand, verkauft, Boolean(images)]);
   if (key === chancenKey) return;
   chancenKey = key;
-  liste.replaceChildren(...chancen.map((c) => chanceZeile(c, aufListe.has(c.key), laeuft)));
+  for (const b of WURZEL.querySelectorAll("#radar-wahl button")) {
+    const an = b.dataset.liste === radarListe;
+    b.classList.toggle("active", an);
+    b.setAttribute("aria-checked", String(an));
+    // Kleine Zahl am Umschalter: wie viele Karten in der Liste stehen.
+    // Eigenes Element statt ::after - die Umschalter haben dort schon Stile.
+    if (!b.dataset.label) b.dataset.label = b.textContent;
+    const anzahl = radarEintraege(b.dataset.liste).length;
+    const zahl = document.createElement("small");
+    zahl.className = "radar-zahl";
+    zahl.textContent = anzahl ? String(anzahl) : "";
+    zahl.hidden = !anzahl;
+    b.replaceChildren(b.dataset.label, zahl);
+  }
+  $("radar-erklaerung").textContent = RADAR_ERKLAERUNG[radarListe] || "";
+  liste.replaceChildren(...eintraege.map((c) => chanceZeile(c, radarListe, aufListe.has(c.key), laeuft)));
   $("chancen-stand").textContent = chancenStand.karten
-    ? (chancenStand.karten === 1 ? "1 Karte" : fmt(chancenStand.karten) + " Karten") + " beobachtet · " + fmt(chancenStand.reif) + " mit genug Verlauf"
+    ? (chancenStand.karten === 1 ? "1 Karte" : fmt(chancenStand.karten) + " Karten") + " · " + fmt(chancenStand.reif) + " mit Verlauf · " +
+      fmt(verkauft) + (verkauft === 1 ? " Verkauf" : " Verkäufe") + " in der letzten Std."
     : "Noch keine Preise gemerkt";
-  $("chancen-leer").hidden = chancen.length > 0;
-  if (!chancen.length) {
-    $("chancen-leer-text").textContent = !MARKT
-      ? "Die Markt-Analyse ist nicht geladen. Lade die Web App neu (F5)."
-      : chancenStand.reif > 0
-        ? "Gerade ist keine Karte günstig genug. Der Bot schaut bei jeder Suche weiter – fällt ein Preis, steht die Karte hier."
-        : "Der Bot lernt noch die Preise. Jede Suche füllt den Verlauf, nach etwa einer Stunde erkennt er Chancen. Ein Markt-Scan beschleunigt das.";
-    $("chancen-fortschritt").hidden = chancenStand.reif > 0;
+  $("chancen-leer").hidden = eintraege.length > 0;
+  if (!eintraege.length) {
+    $("chancen-leer").querySelector("b").textContent = radarListe === "chancen" ? "Noch keine Chancen" : radarListe === "bestseller" ? "Noch keine Bestseller" : "Gerade nichts";
+    $("chancen-leer-text").textContent = radarLeerText(radarListe);
+    const lernt = !(chancenStand.reif > 0) && radarListe !== "bestseller";
+    $("chancen-fortschritt").hidden = !lernt;
     $("chancen-balken").style.width = Math.round(chancenStand.fortschritt * 100) + "%";
   }
+}
+
+function radarZeigen(liste) {
+  radarListe = RADAR_ERKLAERUNG[liste] ? liste : "chancen";
+  chancenKey = "";
+  renderChancen();
+  try {
+    chrome.storage.local.set({ radarListe }).catch(() => {});
+  } catch (e) {}
+}
+
+for (const b of WURZEL.querySelectorAll("#radar-wahl button")) b.addEventListener("click", () => radarZeigen(b.dataset.liste));
+
+// Der Radar-Haken ist derselbe Schalter wie "Live-Filter automatisch alle 7
+// Minuten erneuern" (autoFilters) - gespeichert und gelesen wird nur dort.
+function radarAutoAbgleichen() {
+  if ($("radarAuto") && $("autoFilters")) $("radarAuto").checked = $("autoFilters").checked;
+}
+if ($("radarAuto")) {
+  $("radarAuto").addEventListener("change", () => {
+    $("autoFilters").checked = $("radarAuto").checked;
+    $("autoFilters").dispatchEvent(new Event("change"));
+  });
+  $("autoFilters").addEventListener("change", radarAutoAbgleichen);
 }
 
 function chancenMeldung(text, level, mitStart) {
@@ -10014,11 +10156,12 @@ async function chanceAufListe(c) {
     chancenMeldung("Während der Bot läuft, bleibt die Liste, wie sie ist. Stoppe ihn zuerst.", "warn");
     return;
   }
+  if (!(c.kaufBis > 0) || !(c.ziel > 0)) return;
   // Wie ein Live-Filter: Der Verkaufspreis faehrt mit (salePrice = Ziel), die
-  // Chance laeuft ab (expiresAt), und preisAt sagt, wann gemessen wurde.
+  // Zeile laeuft ab (expiresAt), und preisAt sagt, wann gemessen wurde.
   const neu = {
     playerId: c.playerId, playerName: c.name, rating: c.rating, rarity: c.rarity, maxPrice: c.kaufBis,
-    source: "chance", salePrice: c.ziel, preisAt: c.preisAt, expiresAt: c.bis, score: c.score
+    source: "chance", salePrice: c.ziel, preisAt: c.preisAt, expiresAt: c.bis, score: Math.round(c.score || c.gewinn || 0)
   };
   const key = targetKey(neu);
   const index = targets.findIndex((t) => targetKey(t) === key);
@@ -10089,6 +10232,7 @@ function assistentZustand() {
     ziele: ziele.length,
     billigstesZiel: preise.length ? Math.min(...preise) : 0,
     chancen: chancenFrisch(),
+    bestseller: radarDaten.bestseller,
     daten: chancenStand
   };
 }
@@ -10145,7 +10289,10 @@ function renderAssistent() {
 }
 
 function assistentAktion(id) {
-  if (id === "chancen") selectTab($("tab-chancen"), false);
+  if (id === "chancen" || id === "bestseller") {
+    selectTab($("tab-chancen"), false);
+    radarZeigen(id);
+  }
   else if (id === "kaeufe") selectTab($("tab-buys"), false);
   else if (id === "snipen") selectTab($("tab-snipe"), false);
   else if (id === "stopp") $("stop").click();
@@ -10255,13 +10402,19 @@ $("chancen-scan").addEventListener("click", marktScannen);
 // Was beim ersten Oeffnen gilt. Der Speicher wird VOR loadSettings gelesen:
 // loadSettings speichert bei neuen Nutzern sofort, danach waere nicht mehr zu
 // erkennen, ob es vorher schon Einstellungen gab.
-const ersterStartStand = chrome.storage.local.get(["settings", "uiAnsicht", "tourV1"]).catch(() => ({}));
+const ersterStartStand = chrome.storage.local.get(["settings", "uiAnsicht", "tourV1", "radarListe"]).catch(() => ({}));
 
 async function ersterStartAnwenden() {
   const roh = (await ersterStartStand) || {};
   const neu = !roh.settings;
   // Neue Nutzer starten einfach, Bestandsnutzer behalten alles, wie es war.
   ansichtSetzen(roh.uiAnsicht === "einfach" || roh.uiAnsicht === "profi" ? roh.uiAnsicht : neu ? "einfach" : "profi", false);
+  if (typeof roh.radarListe === "string" && RADAR_ERKLAERUNG[roh.radarListe]) {
+    radarListe = roh.radarListe;
+    chancenKey = "";
+    renderChancen();
+  }
+  radarAutoAbgleichen();
   if (neu && !roh.tourV1) tourOeffnen();
 }
 
@@ -10275,7 +10428,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.priceHistory || changes.runStats || changes.purchases || changes.liveMarketResults || changes.aktivLog) loadData().then(renderVerkauf);
   if (changes.transferliste || changes.verkaeufe) loadVerkauf();
   // 02.10.2026: neuer Preisverlauf aus content.js -> Chancen und Assistent.
-  if (changes.marktVerlauf) loadMarkt();
+  if (changes.marktVerlauf || changes.marktVerkaeufe) loadMarkt();
   if (changes.playerImages) {
     loadImages().then(() => {
       renderSuggestions();

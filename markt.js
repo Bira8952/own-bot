@@ -225,9 +225,156 @@
       .join(" ");
   }
 
+  // ---------------------------------------------------------------------------
+  // Verkaufserkennung (02.10.2026)
+  //
+  // Auf dem FUT-Markt laesst sich ein laufendes Angebot nicht zurueckziehen.
+  // Fehlt ein Angebot vor seinem Ablauf in einer Antwort, die es zeigen
+  // MUESSTE, wurde es gekauft. "Muesste" heisst: erste Seite, nicht voll (EA
+  // hat also alles geliefert), gleicher Spieler, Preis im gesuchten Fenster,
+  // Kartenart und Rating passen. Alles andere belegt nichts.
+  // ---------------------------------------------------------------------------
+  const ABLAUF_PUFFER_MS = 10000; // knapp vor dem Ablauf zaehlt das Fehlen nicht
+  const BEOBACHTET_MAX = 4000;
+  const VERKAUF_MAX_ALTER_MS = 24 * 60 * 60 * 1000;
+  const VERKAUF_MAX_JE_KARTE = 200;
+  const VERKAUF_MAX_KARTEN = 500;
+
+  // beobachtet: Map tradeId -> { key, playerId, rarity, rating, preis, endetAt }
+  // anfrage: { playerId, rarities: [..] | null, ovrMin, ovrMax, minb, maxb, start, vollstaendig }
+  // angebote: dieselbe Form wie in beobachtet, plus tradeId.
+  // Gibt die erkannten Verkaeufe zurueck: [{ key, preis, t }]. beobachtet wird angepasst.
+  function verkaeufeAbgleichen(beobachtet, anfrage, angebote, jetzt) {
+    const verkauft = [];
+    const liste = Array.isArray(angebote) ? angebote : [];
+    const a = anfrage || {};
+    if (a.vollstaendig && !(a.start > 0) && a.playerId > 0 && a.maxb > 0) {
+      const da = new Set(liste.map((x) => String(x.tradeId)));
+      for (const [id, x] of beobachtet) {
+        if (da.has(id) || x.playerId !== a.playerId) continue;
+        if (x.preis > a.maxb || x.preis < (a.minb || 0)) continue;
+        if (Array.isArray(a.rarities) && a.rarities.length && !a.rarities.includes(x.rarity)) continue;
+        if (a.ovrMin > 0 && x.rating < a.ovrMin) continue;
+        if (a.ovrMax > 0 && x.rating > a.ovrMax) continue;
+        beobachtet.delete(id);
+        if (x.endetAt > jetzt + ABLAUF_PUFFER_MS) verkauft.push({ key: x.key, preis: x.preis, t: jetzt });
+      }
+    }
+    for (const x of liste) {
+      if (x && x.tradeId != null && x.preis > 0 && x.endetAt > jetzt) {
+        const id = String(x.tradeId);
+        beobachtet.delete(id); // neu einsortieren: Map behaelt die Reihenfolge des Einfuegens
+        beobachtet.set(id, { key: x.key, playerId: x.playerId, rarity: x.rarity, rating: x.rating, preis: x.preis, endetAt: x.endetAt });
+      }
+    }
+    for (const [id, x] of beobachtet) if (x.endetAt <= jetzt) beobachtet.delete(id);
+    while (beobachtet.size > BEOBACHTET_MAX) beobachtet.delete(beobachtet.keys().next().value);
+    return verkauft;
+  }
+
+  // Verkaeufe in den Speicher { key: [[t, preis], ...] } einsortieren und begrenzen.
+  function verkaeufeEintragen(alle, neue, jetzt) {
+    const out = {};
+    const grenze = jetzt - VERKAUF_MAX_ALTER_MS;
+    for (const key of Object.keys(alle || {})) {
+      const v = (Array.isArray(alle[key]) ? alle[key] : []).filter((p) => Array.isArray(p) && p[0] > grenze);
+      if (v.length) out[key] = v;
+    }
+    for (const n of neue || []) {
+      if (!n || !n.key || !(n.preis > 0)) continue;
+      const v = out[n.key] || (out[n.key] = []);
+      v.push([n.t, n.preis]);
+      if (v.length > VERKAUF_MAX_JE_KARTE) v.splice(0, v.length - VERKAUF_MAX_JE_KARTE);
+    }
+    const keys = Object.keys(out);
+    if (keys.length > VERKAUF_MAX_KARTEN) {
+      const letzte = (k) => out[k][out[k].length - 1][0];
+      keys.sort((x, y) => letzte(y) - letzte(x));
+      for (const k of keys.slice(VERKAUF_MAX_KARTEN)) delete out[k];
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Markt-Radar (02.10.2026): Kennzahlen je Karte und die Ranglisten.
+  // ---------------------------------------------------------------------------
+  const RADAR_FRISCH_MS = 60 * 60 * 1000; // Preis-Ranglisten: letzte Messung hoechstens 1 Std. alt
+  const RADAR_VERKAUF_FENSTER_MS = 3 * 60 * 60 * 1000; // Bestseller: Verkaeufe der letzten 3 Std.
+  const RADAR_MIN_PUNKTE = 4;
+  const RADAR_SCHWELLE = 0.03; // ab 3 % Abweichung zaehlt eine Karte als guenstig / steigend / fallend
+
+  // Preis aus dem Verlauf, der zum Zeitpunkt t galt (letzter Punkt davor).
+  function preisUm(verlauf, t) {
+    let preis = 0;
+    for (const p of verlauf) {
+      if (p[0] > t) break;
+      preis = p[1];
+    }
+    return preis;
+  }
+
+  function radarKarte(verlauf, verkaeufe, jetzt) {
+    const v = Array.isArray(verlauf) ? verlauf : [];
+    const s = (Array.isArray(verkaeufe) ? verkaeufe : []).filter((p) => p[0] > jetzt - RADAR_VERKAUF_FENSTER_MS);
+    const letzter = v.length ? v[v.length - 1] : null;
+    const aktuell = letzter ? letzter[1] : 0;
+    const vorher = v.slice(0, -1).map((p) => p[1]);
+    const ueblich = vorher.length >= RADAR_MIN_PUNKTE - 1 ? median(vorher) : 0;
+    const vorStunde = v.length >= 2 ? preisUm(v, jetzt - 60 * 60 * 1000) || v[0][1] : 0;
+    const stundeVerkauft = s.filter((p) => p[0] > jetzt - 60 * 60 * 1000).length;
+    return {
+      aktuell,
+      ueblich,
+      abweichung: ueblich > 0 && aktuell > 0 ? (aktuell - ueblich) / ueblich : 0,
+      aenderung: vorStunde > 0 && aktuell > 0 ? (aktuell - vorStunde) / vorStunde : 0,
+      verkaeufe: s.length,
+      verkaeufeStunde: Math.max(stundeVerkauft, Math.round((s.length / 3) * 10) / 10),
+      verkaufsPreis: s.length ? Math.round(median(s.map((p) => p[1]))) : 0,
+      punkte: v.length,
+      gesehenAt: letzter ? letzter[0] : s.length ? s[s.length - 1][0] : 0
+    };
+  }
+
+  // Ziel und Kaufpreis fuer einen Snipe auf diese Karte: verkauft wird zum
+  // ueblichen Preis (oder dem echten Verkaufspreis, wenn der niedriger ist)
+  // minus 3 % Sicherheit; gekauft hoechstens so, dass nach 5 % Gebuehr noch
+  // mindestens minMarge und minGewinn bleiben - und nie ueber dem Preis von jetzt.
+  function snipePlan(k, opts) {
+    const o = Object.assign({}, STANDARD, opts || {});
+    const basis = [k.ueblich, k.verkaufsPreis].filter((x) => x > 0);
+    if (!basis.length) return null;
+    const ziel = Math.floor(Math.min(...basis) * o.sicherheit);
+    const netto = Math.floor(ziel * (1 - EA_STEUER));
+    let kaufBis = Math.floor(Math.min(netto - o.minGewinn, netto / (1 + o.minMarge)));
+    if (k.aktuell > 0) kaufBis = Math.min(kaufBis, k.aktuell);
+    if (!(kaufBis > 0)) return null;
+    return { ziel, kaufBis, gewinn: gewinn(kaufBis, ziel) };
+  }
+
+  // alleVerlauf: { key: [[t,p,n]] }, alleVerkaeufe: { key: [[t,p]] }.
+  // Gibt { bestseller, guenstig, steigend, fallend } zurueck, je hoechstens opts.max (20).
+  function radar(alleVerlauf, alleVerkaeufe, jetzt, opts) {
+    const max = (opts && opts.max) || 20;
+    const keys = new Set([...Object.keys(alleVerlauf || {}), ...Object.keys(alleVerkaeufe || {})]);
+    const karten = [];
+    for (const key of keys) {
+      const k = radarKarte((alleVerlauf || {})[key], (alleVerkaeufe || {})[key], jetzt);
+      karten.push(Object.assign({ key }, k));
+    }
+    const frisch = (k) => k.aktuell > 0 && k.gesehenAt > jetzt - RADAR_FRISCH_MS;
+    const nimm = (liste, sortierung) => liste.sort(sortierung).slice(0, max);
+    return {
+      bestseller: nimm(karten.filter((k) => k.verkaeufe > 0), (a, b) => b.verkaeufe - a.verkaeufe || b.verkaufsPreis - a.verkaufsPreis),
+      guenstig: nimm(karten.filter((k) => frisch(k) && k.punkte >= RADAR_MIN_PUNKTE && k.abweichung <= -RADAR_SCHWELLE), (a, b) => a.abweichung - b.abweichung),
+      steigend: nimm(karten.filter((k) => frisch(k) && k.punkte >= 2 && k.aenderung >= RADAR_SCHWELLE), (a, b) => b.aenderung - a.aenderung),
+      fallend: nimm(karten.filter((k) => frisch(k) && k.punkte >= 2 && k.aenderung <= -RADAR_SCHWELLE), (a, b) => a.aenderung - b.aenderung)
+    };
+  }
+
   const api = {
     EA_STEUER, SLOT_MS, MAX_ALTER_MS, MAX_PUNKTE, MIN_PUNKTE, MIN_SPANNE_MS, MAX_KARTEN, STANDARD, FRISCH_MS,
-    verlaufEintragen, verlaufBegrenzen, median, gewinn, signale, bewerte, rangliste, keyTeilen, datenStand, sparkPunkte
+    verlaufEintragen, verlaufBegrenzen, median, gewinn, signale, bewerte, rangliste, keyTeilen, datenStand, sparkPunkte,
+    ABLAUF_PUFFER_MS, BEOBACHTET_MAX, RADAR_FRISCH_MS, verkaeufeAbgleichen, verkaeufeEintragen, radarKarte, snipePlan, radar
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.FC27Markt = api;

@@ -138,7 +138,7 @@
     <!-- Reiter mit kleinen Bildern, kleben zusammen mit der Standzeile oben. -->
     <nav class="tabs" role="tablist">
       <button class="tab" role="tab" id="tab-snipe" data-view="view-snipe" aria-controls="view-snipe" aria-selected="true"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>Snipen</button>
-      <button class="tab" role="tab" id="tab-chancen" data-view="view-chancen" aria-controls="view-chancen" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Chancen</button>
+      <button class="tab" role="tab" id="tab-chancen" data-view="view-chancen" aria-controls="view-chancen" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Radar</button>
       <button class="tab" role="tab" id="tab-filters" data-view="view-filters" aria-controls="view-filters" aria-selected="false" tabindex="-1" data-profi><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>Filter</button>
       <button class="tab" role="tab" id="tab-buys" data-view="view-buys" aria-controls="view-buys" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-1 13H6z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>Käufe</button>
       <button class="tab" role="tab" id="tab-settings" data-view="view-settings" aria-controls="view-settings" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Optionen</button>
@@ -702,14 +702,26 @@
          Ansicht selbst fragt EA nie. -->
     <section id="view-chancen" role="tabpanel" aria-labelledby="tab-chancen" hidden>
       <div class="page-intro">
-        <span class="eyebrow">CHANCEN</span>
-        <h2>Günstig kaufen, teurer verkaufen.</h2>
-        <p>Der Bot merkt sich bei jeder Suche die Preise. Hier stehen Karten, die gerade unter ihrem normalen Preis liegen oder deutlich anziehen.</p>
+        <span class="eyebrow">MARKT-RADAR</span>
+        <h2>Was läuft gerade am Markt?</h2>
+        <p>Der Bot merkt sich bei jeder Suche Preise und erkennt Verkäufe. Hier siehst du, was sich lohnt, was sich am besten verkauft, was gerade billig ist und wohin die Preise gehen.</p>
       </div>
       <div class="chancen-leiste">
         <span class="hint" id="chancen-stand"></span>
-        <button id="chancen-scan" class="secondary ico ico-radar" type="button" title="Sucht einmal breit am Markt (höchstens 12 Anfragen). Kauft nichts, füllt aber den Preisverlauf.">Markt scannen</button>
+        <button id="chancen-scan" class="secondary ico ico-radar" type="button" title="Sucht einmal breit am Markt (höchstens 12 Anfragen). Kauft nichts, füllt aber Preisverlauf und Verkaufszahlen.">Markt scannen</button>
       </div>
+      <!-- Derselbe Schalter wie Optionen → Allgemein → "Live-Filter automatisch
+           alle 7 Minuten erneuern" (autoFilters). popup.js haelt beide gleich. -->
+      <label class="check radar-auto"><input id="radarAuto" type="checkbox">Automatisch alle 7 Minuten scannen</label>
+      <p class="hint radar-auto-hint">Nur wenn der Bot steht und keine EA-Pause läuft, höchstens 12 Anfragen je Scan.</p>
+      <div class="segmented radar-wahl" id="radar-wahl" role="radiogroup" aria-label="Rangliste">
+        <button type="button" data-liste="chancen" role="radio" aria-checked="true" class="active">Chancen</button>
+        <button type="button" data-liste="bestseller" role="radio" aria-checked="false">Bestseller</button>
+        <button type="button" data-liste="guenstig" role="radio" aria-checked="false">Günstig</button>
+        <button type="button" data-liste="steigend" role="radio" aria-checked="false">Steigt</button>
+        <button type="button" data-liste="fallend" role="radio" aria-checked="false">Fällt</button>
+      </div>
+      <p class="hint radar-erklaerung" id="radar-erklaerung"></p>
       <div id="chancen-liste" class="chancen-liste"></div>
       <div id="chancen-leer" class="chancen-leer" hidden>
         <b>Noch keine Chancen</b>
@@ -721,6 +733,8 @@
         <summary>So rechnet der Bot</summary>
         <p class="hint">Je Karte merkt sich der Bot alle 10 Minuten den günstigsten Preis, der schon mindestens 5 Minuten am Markt stand. Kurze Lockangebote zählen nicht. Nach mindestens 6 Messungen über eine Stunde vergleicht er den aktuellen Preis mit dem üblichen (Median).</p>
         <p class="hint"><b>Dip:</b> Der Preis liegt 8 bis 40 % unter dem üblichen und fällt nicht weiter. <b>Steigt:</b> Der Preis zieht an, der übliche Preis liegt noch darüber.</p>
+        <p class="hint"><b>Verkäufe:</b> Auf dem Transfermarkt kann man ein laufendes Angebot nicht zurückziehen. Verschwindet ein Angebot vor seinem Ablauf aus einer Suche, die es zeigen müsste, wurde es gekauft. So zählt der Bot Verkäufe und echte Verkaufspreise – ohne eine einzige Anfrage extra. Er sieht nur die Karten, nach denen er selbst sucht; mehrere Markt-Scans im Abstand von ein paar Minuten bringen die meisten Zahlen.</p>
+        <p class="hint"><b>Günstig, Steigt, Fällt:</b> Vergleich mit dem üblichen Preis der letzten Stunden bzw. mit dem Preis vor einer Stunde. „Snipen bis“ ist so gerechnet, dass nach 5 % Gebühr mindestens 3 % und 150 Coins Gewinn bleiben, wenn die Karte zum üblichen (oder zum echten Verkaufs-)Preis minus 3 % verkauft wird.</p>
         <p class="hint">Das Ziel ist der übliche Preis minus 3 % Sicherheit. Der Gewinn ist nach 5 % EA-Gebühr gerechnet. Angezeigt wird nur, was mindestens 3 % und 150 Coins bringt. Eine Chance ist eine begründete Wahrscheinlichkeit, kein Versprechen. Vor dem Start prüft der Bot den Preis noch einmal frisch.</p>
       </details>
     </section>
@@ -1161,9 +1175,10 @@
 
       <div class="hilfe-karte">
 
-      <h4 id="hilfe-chancen">Reiter Chancen und der Assistent</h4>
+      <h4 id="hilfe-chancen">Reiter Radar und der Assistent</h4>
       <ul>
         <li><b>Chancen</b> sind Karten, die gerade unter ihrem üblichen Preis liegen (<b>Dip</b>) oder deutlich anziehen (<b>steigt</b>). Der Bot erkennt sie aus den Preisen, die er bei jeder Suche sieht – dafür fragt er EA kein einziges Mal extra.</li>
+        <li><b>Bestseller</b>: die meistverkauften Karten der letzten 3 Stunden. Ein laufendes Angebot lässt sich nicht zurückziehen – verschwindet es vor seinem Ablauf aus einer Suche, die es zeigen müsste, wurde es gekauft. <b>Günstig</b>, <b>Steigt</b>, <b>Fällt</b>: Abstand zum üblichen Preis bzw. Änderung seit einer Stunde. „Snipen bis“ setzt die Karte mit einem Kaufpreis auf deine Liste, der nach 5 % Gebühr noch Gewinn lässt.</li>
         <li>Am Anfang braucht er etwa eine Stunde mit Suchen, bis eine Karte genug Verlauf hat. <b>Markt scannen</b> (höchstens 12 Anfragen, kauft nichts) beschleunigt das.</li>
         <li><b>Auf meine Liste</b> übernimmt die Karte mit „Kaufen bis“ als Zielpreis. Der Verkauf rechnet mit dem Ziel, also dem üblichen Preis minus 3 % Sicherheit. Eine Chance gilt 30 Minuten ab der letzten Messung, danach überspringt der Lauf sie.</li>
         <li>Eine Chance ist eine begründete Wahrscheinlichkeit, kein Versprechen: Fällt ein Preis dauerhaft (zum Beispiel nach einem neuen Event), erholt er sich nicht.</li>
@@ -1458,7 +1473,7 @@
         <h2 id="tour-titel">Willkommen bei deinem Bot</h2>
         <p>Der Bot kauft Spieler unter ihrem üblichen Preis – und hilft dir, sie mit Gewinn weiterzuverkaufen.</p>
         <ol class="tour-liste">
-          <li><b>Finden:</b> Unter „Chancen“ zeigt er Karten, die gerade günstig sind. Oder du wählst selbst einen Spieler.</li>
+          <li><b>Finden:</b> Der „Radar“ zeigt Chancen, Bestseller und Karten, die gerade billig sind, steigen oder fallen. Oder du wählst selbst einen Spieler.</li>
           <li><b>Starten:</b> Ein Klick auf „Auf meine Liste“, dann „Jetzt starten“. Vor dem Start siehst du alles noch einmal.</li>
           <li><b>Verkaufen:</b> Gekaufte Karten landen auf der Transferliste. Auf Wunsch stellt er sie gleich ein.</li>
         </ol>
