@@ -8,6 +8,9 @@ const von = source.indexOf('const MAX_COLLECTIONS =');
 const section = source.slice(von, source.indexOf('$("collection-pick").addEventListener', von));
 const reinigungVon = source.indexOf('function sanitizeTargets(');
 const reinigung = source.slice(reinigungVon, source.indexOf('function setTargetsHint(', reinigungVon));
+// sanitizeTargets nutzt seit 28.09.2026 rarityWert (mehrere Kartenarten).
+const artVon = source.indexOf('function rarityListeWert(');
+const art = source.slice(artVon, source.indexOf('function rarityValue(', artVon));
 
 function setup(gespeichert) {
   const nodes = {};
@@ -19,11 +22,11 @@ function setup(gespeichert) {
     $, Object, Array, Number, String, Boolean, RegExp, document: {
       createElement: () => ({ value: '', textContent: '' })
     },
-    MAX_TARGETS: 10,
+    MAX_TARGETS: 10, VERKAUF_MIN_PREIS: 200,
     targets: [],
     chrome: { storage: { local: { get: async () => ({ collections: gespeichert }), set: async () => {} } } }
   });
-  vm.runInContext(reinigung + section, context);
+  vm.runInContext(art + reinigung + section, context);
   return { context, $ };
 }
 

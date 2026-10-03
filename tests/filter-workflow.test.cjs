@@ -4,6 +4,9 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '..', 'popup.js'), 'utf8');
 const section = source.slice(source.indexOf('let filterLoadToken ='), source.indexOf('// Zielliste: mehrere Spieler'));
+// activateModalFilter nutzt seit 28.09.2026 rarityWert (mehrere Kartenarten).
+const artVon = source.indexOf('function rarityListeWert(');
+const art = source.slice(artVon, source.indexOf('function rarityValue(', artVon));
 
 function setup({ autoStart = false, fresh = true, budget = 5000, cancel = false } = {}) {
   const nodes = {};
@@ -36,11 +39,13 @@ function setup({ autoStart = false, fresh = true, budget = 5000, cancel = false 
     mitPreisCheck: (alt, neu) => Object.assign({}, alt, neu),
     suggestionFor: () => ({ value: 650 }), filterScore: () => 80, filterKarteAuffrischen() {},
     sofortStartSperre: () => null,
+    // Die echte sofortStartSperre steht im Abschnitt und fragt das Budget-Feld.
+    budgetOhneGrenze: () => String($('budget').value).trim() === '',
     choose() {}, zeigeSnipeNotiz(text) { notices.push(text); }, setSnipeMode() {}, goToStep() {}, cancelFilterPriceCheck() {},
     saveSettings: async () => {}, closeFilterModal() {}, renderTargets() {}, renderLiveFilters() {}, renderFilterModal() {},
     openStartModal: () => calls.push('configure'), startRun: async list => calls.push(['start', list])
   });
-  vm.runInContext(section, context);
+  vm.runInContext(art + section, context);
   return { context, calls, notices, $ };
 }
 

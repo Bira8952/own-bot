@@ -17,7 +17,7 @@
     },
     {
       "matches": ["https://www.ea.com/*ultimate-team/web-app*"],
-      "js": ["content.js", "popup.js"],
+      "js": ["markt.js", "assistent.js", "content.js", "popup.js"],
       "run_at": "document_start"
     }
   ],

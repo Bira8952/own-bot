@@ -260,6 +260,21 @@
     BID_MAX_OPEN_MIN: 60, // Notbremse, wenn die Restzeit nie erkannt wurde
     SUGGEST_DISCOUNT: 0.1, // Vorschlag: 10 % unter dem Marktpreis
     HISTORY_DAYS: 14,
+    // Preissprung-Schutz (02.10.2026). Weicht ein neuer Preis-Check um mehr
+    // als 35 % vom letzten derselben Karte ab, gilt er als unbestaetigt: Zum
+    // Kaufen zaehlt dann der kleinere, zum Verkaufen der groessere Preis. Die
+    // Idee stammt von MagicBuyer (kein Code uebernommen). Dessen automatische
+    // Nachmessung nach 20 s lassen wir bewusst weg - sie kostet zusaetzliche
+    // EA-Suchen, und das Konto war schon gesperrt. Bestaetigt wird beim
+    // naechsten Preis-Check, den der Nutzer ohnehin startet.
+    //
+    // Das Fenster ist 6 Stunden statt MagicBuyers 30 Minuten: Der Preis-Check
+    // ist waehrend eines Laufs gesperrt, zwei Checks liegen darum oft Stunden
+    // auseinander - mit 30 Minuten griffe der Schutz praktisch nie. Die Werte
+    // stehen hier und nicht lose vor savePriceEntry, damit Tests sie ueber
+    // einen CONFIG-Stub bekommen.
+    PREIS_SPRUNG_AB: 0.35,
+    PREIS_SPRUNG_REF_MAX_MS: 6 * 60 * 60 * 1000,
     DROUGHT_MIN: 20, // ab so vielen Minuten ohne Kauf gibt es einen Hinweis
     // Live-Filter gelten nur 15 Minuten - mit 20 kaeme der Hinweis nie.
     DROUGHT_LIVE_MIN: 8,
@@ -415,6 +430,14 @@
     20000: 240 // ACCOUNT_BANNED
   };
 
+  // Dringende EA-Warnungen (02.10.2026). Endet ein Lauf wegen eines dieser
+  // Codes, kommt der Warnton auch ohne den Haken "Ton am Lauf-Ende", und die
+  // Chrome-Meldung bleibt stehen, bis man sie wegklickt. Mit dem Haken "Bei
+  // EA-Warnung sofort stoppen" beenden sie im FST-Modus auch Kauf, Gebot und
+  // Verkaufs-Wache sofort. Warum: Am 22.09. kamen 426 und 461 direkt vor der
+  // Sperre - wer das nicht mitbekommt, startet ahnungslos neu.
+  const WARNUNG_CODES = new Set([401, 426, 458, 461, 465, 468, 474, 494, 512, 521, 20000, 20004]);
+
   // Kauf-Antworten, die bedeuten: Angebot war schon weg. Normal, kein Fehler.
   // 461 stand hier frueher falsch drin. Das ist PERMISSION_DENIED und gehoert
   // zu den harten Stopps: Sonst verbucht der Bot ein echtes Rechteproblem als
@@ -467,6 +490,9 @@
     // Einstellungen steht. fstEinst ist der Haken aus den Einstellungen; er
     // wird erst beim naechsten Start (oder im Leerlauf) uebernommen.
     fstEinst: false,
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026). Nur in
+    // applyAutomationSettings gesetzt, Standard AUS. Wirkt nur im FST-Modus.
+    warnungStopp: false,
     running: false,
     token: 0,
     cfg: null,
@@ -626,8 +652,8 @@
   // ---------------------------------------------------------------------------
   // Speicherplatz im Blick behalten (25.09.2026).
   //
-  // chrome.storage.local hat eine feste Grenze (rund 10 MB; die Erweiterung
-  // hat kein unlimitedStorage). Preis-Verlauf, Kauf-Liste, Preis-Gedaechtnis,
+  // chrome.storage.local hatte eine feste Grenze (rund 10 MB). Seit 28.09.2026
+  // hat die Erweiterung unlimitedStorage - gewarnt wird erst ab 200 MB. Preis-Verlauf, Kauf-Liste, Preis-Gedaechtnis,
   // Filterlisten und Spielerbilder wachsen mit jedem Tag. Ist die Grenze
   // erreicht, schlaegt jedes Speichern fehl - und alle unsere Schreibversuche
   // fangen den Fehler still ab. Der Bot liefe dann weiter, wuerde sich aber
@@ -1252,9 +1278,13 @@
   }
 
   // Chrome-Benachrichtigung ueber background.js (abschaltbar in den Einstellungen).
-  function notify(message, ton) {
+  // dringend = true (02.10.2026): Die Meldung bleibt stehen, bis man sie
+  // wegklickt (background.js, requireInteraction).
+  function notify(message, ton, dringend) {
     try {
-      const pending = chrome.runtime.sendMessage({ type: "notify", title: "FC27 Own Bot", message, ton: ton === "kauf" || ton === "ende" ? ton : "" });
+      const nachricht = { type: "notify", title: "FC27 Own Bot", message, ton: ton === "kauf" || ton === "ende" ? ton : "" };
+      if (dringend === true) nachricht.dringend = true;
+      const pending = chrome.runtime.sendMessage(nachricht);
       if (pending && typeof pending.catch === "function") pending.catch(() => {});
     } catch (e) {}
   }
@@ -1304,8 +1334,9 @@
   }
 
   // Beim Start-Klick aufrufen: Dann gibt Chrome den Ton frei.
+  // Auch ohne Ton-Haken (02.10.2026): Der Warnton bei einer dringenden
+  // EA-Warnung kommt immer - und braucht dafuer die Freigabe vom Start-Klick.
   function tonVorbereiten() {
-    if (!TON.kauf && !TON.ende) return;
     try {
       const ctx = tonKontext();
       if (ctx && ctx.state === "suspended") {
@@ -1348,10 +1379,11 @@
 
   // art: "kauf" | "ende" | "warnung". probe = { lautstaerke } fuer die Hoerprobe.
   // "ende" und "warnung" haengen beide am Haken "Ton am Lauf-Ende".
-  function tonSpielen(art, probe) {
+  // immer = true (02.10.2026): dringende EA-Warnung, spielt auch ohne Haken.
+  function tonSpielen(art, probe, immer) {
     try {
       if (!TON_MUSTER[art]) return false;
-      if (!probe && !(art === "kauf" ? TON.kauf : TON.ende)) return false;
+      if (!probe && !immer && !(art === "kauf" ? TON.kauf : TON.ende)) return false;
       const jetzt = Date.now();
       const abstand = probe ? TON_PROBE_ABSTAND_MS : TON_ABSTAND_MS[art];
       if (jetzt - (TON.zuletzt[art] || 0) < abstand) return false;
@@ -1641,6 +1673,46 @@
     return wert;
   }
 
+  // Startgebot und Sofortkauf beim Einstellen (02.10.2026). Wortgleich mit
+  // popup.js - ein Test haelt beide gleich (Wortlaut und ein Raster).
+  //
+  // Anlass: Fund 25/26 der Komplettpruefung. gleichEinstellen klemmte den
+  // Sofortkauf auf genau EAs Mindestpreis und liess dann Startgebot =
+  // Sofortkauf zu - das lehnt EA ab. Der Verkaufs-Helfer schickte denselben
+  // Preis los. Jede abgelehnte Anfrage ist eine Anfrage zu viel.
+  //
+  // Regeln: Sofortkauf auf EAs Preisleiter, hoechstens eaMax, mindestens eine
+  // Stufe ueber dem kleinsten Leiterpreis ab eaMin. Startgebot genau eine
+  // Stufe darunter, nie unter eaMin. Fehler "spanne": EAs Spanne laesst
+  // keinen Sofortkauf ueber dem Mindestpreis zu. Fehler "start": es gibt kein
+  // Startgebot unter dem Sofortkauf (unter 200 Coins ohne bekannte Spanne).
+  // Die Idee hat MagicBuyer (prepareListing), kein Code uebernommen. Reine
+  // Rechnung ohne Texte, damit beide Fassungen gleich bleiben. 0 Anfragen.
+  function einstellPreise(wunsch, eaMin, eaMax) {
+    const min = Math.max(0, Math.floor(Number(eaMin) || 0));
+    const max = Math.max(0, Math.floor(Number(eaMax) || 0));
+    let sofort = roundDownToStep(Math.max(0, Math.floor(Number(wunsch) || 0)));
+    let grenze = "";
+    if (max && sofort > max) {
+      sofort = roundDownToStep(max);
+      grenze = "max";
+    }
+    // Kleinster Leiterpreis ab eaMin. EA schickt eaMin heute immer auf der
+    // Leiter - liegt es einmal daneben, zaehlt die naechste Stufe darueber.
+    let minLeiter = roundDownToStep(min);
+    if (minLeiter < min) minLeiter = roundDownToStep(minLeiter + stepFor(minLeiter));
+    const sofortMin = minLeiter ? roundDownToStep(minLeiter + stepFor(minLeiter)) : 0;
+    if (sofortMin && sofort < sofortMin) {
+      sofort = sofortMin;
+      grenze = "min";
+    }
+    if (max && sofort > max) return { sofort: 0, start: 0, grenze, fehler: "spanne" };
+    let start = roundDownToStep(sofort - 1);
+    if (minLeiter && start < minLeiter) start = minLeiter;
+    if (!(start > 0) || start >= sofort) return { sofort, start: 0, grenze, fehler: "start" };
+    return { sofort, start, grenze, fehler: "" };
+  }
+
   // Spieler + optionales Rating (0 = jede Version) + optionale Kartenart
   // (0 = jede Art). Die Kartenart ist EAs "rarityIds"/"rareflag", z. B. 12
   // fuer Basis-Ikone. Sie kommt aus der offenen EA-Suchmaske, nicht aus
@@ -1731,6 +1803,10 @@
       // Zahl wuerde nur tot im Speicher liegen und still nichts tun - darum
       // gilt sie gleich als "aus".
       target.listFestpreis = festJeFilter >= CONFIG.LIST_MIN_PRICE && festJeFilter <= 15000000 ? festJeFilter : 0;
+      // Chance aus dem Radar (02.10.2026): Ihr Verkaufspreis (salePrice) ist
+      // das Ziel nach der Erholung - er geht beim Einstellen vor einem frischen
+      // Preis-Check, der nur den gefallenen Preis von jetzt kennt.
+      target.chance = item && item.chance === true;
       if (!targets.some((t) => t.key === target.key)) targets.push(target);
     }
 
@@ -1802,13 +1878,15 @@
       bidSniping: input.bidSniping === true,
       bidSeconds: [30, 60].includes(toInt(input.bidSeconds)) ? toInt(input.bidSeconds) : 60,
       maxBidsPerAuction: Math.min(10, Math.max(1, toInt(input.maxBidsPerAuction) || CONFIG.MAX_BIDS_PER_AUCTION)),
-      speedMode: ["safe", "normal", "turbo"].includes(input.speedMode) ? input.speedMode : "normal",
+      // "schonend" (02.10.2026): Profil "Konto-schonend", siehe searchDelay.
+      speedMode: ["safe", "normal", "turbo", "schonend"].includes(input.speedMode) ? input.speedMode : "normal",
       // "off" = keine Sicherheitspausen (27.09.2026, wie FSTs useBreaks in
       // scripts.js Z. 3263). Unbekannte Werte fallen weiter auf "medium"
       // zurueck - der Standard bleibt also "ausgewogen", nicht wie bei FST aus.
       // "fst" (01.10.2026): FSTs sichtbare Pausen-Zahlen. Nur im FST-Modus
       // gueltig, sonst faellt es wie jeder unbekannte Wert auf "medium".
-      pausePreset: ["off", "short", "medium", "long"].concat(fst ? ["fst"] : []).includes(input.pausePreset) ? input.pausePreset : "medium",
+      // "schonend" (02.10.2026) gilt in beiden Modi, siehe breakPlan.
+      pausePreset: ["off", "short", "medium", "long", "schonend"].concat(fst ? ["fst"] : []).includes(input.pausePreset) ? input.pausePreset : "medium",
       // FST-Modus: Beim Snipen hat FST keine Grenze je Filter. Leeres Feld =
       // keine Grenze; eine eingetragene Zahl gilt (mindestens 1, nach oben offen).
       filterSearchLimit: fst ? (toInt(input.filterSearchLimit) > 0 ? toInt(input.filterSearchLimit) : Number.MAX_SAFE_INTEGER)
@@ -2320,7 +2398,13 @@
   }
 
   async function appAnfrage(weg) {
+    // Handsuchen mitlesen (02.10.2026): Die eigene App-Suche darf nicht als
+    // Handsuche des Nutzers zurueckkommen - zweite Sicherung neben der
+    // Markierung in sniffer.js. seitenFrage loest immer auf (spaetestens nach
+    // der Frist mit null), die Vormerkung endet also sicher.
+    const vormerkung = handsucheBotVormerken(weg);
     const antwort = await seitenFrage(weg.typ, Object.assign({ nurSuchseite: suchseitePflicht() }, weg.daten), CONFIG.REQUEST_TIMEOUT_MS);
+    vormerkung();
     if (!antwort) throw new Error("Keine Antwort von EA nach " + Math.round(CONFIG.REQUEST_TIMEOUT_MS / 1000) + " s.");
     // Die Suchseite war zu. Das ist kein Netzfehler, sondern ein klarer Stopp.
     if (antwort.suchseite === false) throw new HardStop(SUCHSEITE_ZU);
@@ -2432,11 +2516,18 @@
       const mitCode = (c) => (/HTTP \d+/.test(HARD_STOP[c]) ? HARD_STOP[c] : HARD_STOP[c] + " (HTTP " + c + ")");
       // Der EA-Statuscode haengt am Fehler (Punkt 4b): Die Leiste erkennt daran,
       // dass ein Markt-Scan an EA gescheitert ist und beendet die Rotation.
-      const mitStatus = (text) => Object.assign(new HardStop(text), { code });
+      // eaWarnung (02.10.2026): dringende Warnung, siehe WARNUNG_CODES.
+      const mitStatus = (text) => Object.assign(new HardStop(text), { code }, WARNUNG_CODES.has(code) ? { eaWarnung: code } : {});
       if (lesen) {
         throw mitStatus(HARD_STOP[code] ? mitCode(code) : "Suche fehlgeschlagen, Code " + code + ".");
       }
       if (code === 473) throw mitStatus(mitCode(473));
+      // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): auch bei Kauf und
+      // Gebot sofort Schluss - und beim Verschieben/Einstellen direkt nach dem
+      // Kauf, das gehoert zum Kauf-Ablauf (executeBuy traegt den Kauf vorher
+      // ins Kauflog ein, siehe clubStop). Ohne Startsperre - sperreFuerCode
+      // kennt im FST-Modus keine. Ohne Haken wie bisher.
+      if (STATE.warnungStopp === true && WARNUNG_CODES.has(code)) throw mitStatus(mitCode(code));
       return res;
     }
     if (HARD_STOP[res.status]) {
@@ -2444,7 +2535,11 @@
       // haeufigste Fehler ueberhaupt. Deshalb wird der Start eine Weile
       // blockiert - nicht nur der laufende Betrieb gestoppt.
       sperreFuerCode(res.status);
-      throw new HardStop(HARD_STOP[res.status] + " (HTTP " + res.status + ")");
+      const fehler = new HardStop(HARD_STOP[res.status] + " (HTTP " + res.status + ")");
+      // Dringende Warnung (02.10.2026): Alarmton und stehende Meldung beim Stopp.
+      // Bewusst kein .code: scan.code steuert im strengen Modus die Rotation.
+      if (WARNUNG_CODES.has(Number(res.status))) fehler.eaWarnung = Number(res.status);
+      throw fehler;
     }
 
     // 429 steht seit 22.09.2026 in HARD_STOP (15 Min. Pause). Die kurze
@@ -2652,8 +2747,9 @@
   // (120 Sekunden) wurde nur gefuellt und nirgends gelesen.
   const GEDAECHTNIS_ANKER_AB_S = 300;
 
-  function gedaechtnisMerken(auctions) {
+  function gedaechtnisMerken(auctions, pfad) {
     if (!Array.isArray(auctions)) return;
+    verkaeufeErkennen(auctions, pfad);
     for (const a of auctions) {
       const preis = Number(a && a.buyNowPrice) || 0;
       const item = a && a.itemData;
@@ -2689,6 +2785,257 @@
     gedaechtnisVielleichtSichern();
   }
 
+  // --- Eigene Suchen des Nutzers mitlesen (02.10.2026) -----------------------
+  //
+  // Sucht der Nutzer selbst in der Web App, schickt EA dieselben Angebote, die
+  // der Bot sonst mit eigenen Anfragen holt. sniffer.js liest die Antwort mit
+  // ("marktsuche"), und hier landet sie in gedaechtnisMerken - Preis-
+  // Gedaechtnis, Markt-Verlauf (Radar) und Verkaufserkennung bekommen Daten
+  // fuer 0 zusaetzliche EA-Anfragen.
+  //
+  // Die Meldung kommt aus der Seite, also aus fremdem Code. Darum wird alles
+  // noch einmal geprueft, obwohl sniffer.js schon gesaeubert hat: Herkunft,
+  // Adresse, Felder, Zahlenbereiche und Menge.
+  //
+  // Nicht doppelt zaehlen: Direkte Bot-Suchen laufen per fetch aus dieser
+  // isolierten Welt und sind fuer sniffer.js unsichtbar - zur Sicherheit wird
+  // jede Adresse aus EIGENE_ADRESSEN trotzdem verworfen. App-Suchen des Bots
+  // markiert sniffer.js beim Oeffnen; dazu merkt appAnfrage hier den Spieler
+  // vor (zweite Sicherung, mit 3 s Nachlauf).
+  const HANDSUCHE = { suchen: 0, angebote: 0, leer: 0, verworfen: 0, ohneErkennung: 0, grund: "", at: 0, zeiten: [], zuletzt: new Map(), bot: [], timer: null };
+  const HANDSUCHE_MAX_ANGEBOTE = 50;
+  const HANDSUCHE_MAX_PRO_MIN = 30;
+  const HANDSUCHE_NACHLAUF_MS = 3000;
+  const HANDSUCHE_GLEICH_MS = 60000;
+  // Notbremse wie in sniffer.js: Eine Vormerkung, deren Ende nie kam, sperrt
+  // hoechstens 30 s - laenger wartet appAnfrage ohnehin nicht.
+  const HANDSUCHE_BOT_MAX_MS = 30000;
+
+  function handsucheBotVormerken(weg) {
+    if (!weg || weg.typ !== "appSuche?") return () => {};
+    const kriterien = weg.daten && weg.daten.kriterien;
+    const eintrag = { id: toInt(kriterien && kriterien.maskedDefId) || 0, offen: true, beginn: Date.now(), ende: 0 };
+    HANDSUCHE.bot.push(eintrag);
+    if (HANDSUCHE.bot.length > 5) HANDSUCHE.bot.shift();
+    return () => {
+      eintrag.offen = false;
+      eintrag.ende = Date.now();
+    };
+  }
+
+  // Verglichen wird bewusst nur der Spieler, nicht der Preis: Ob EA maxb
+  // unveraendert in die Adresse schreibt, ist ungemessen. Eine Handsuche nach
+  // genau diesem Spieler in genau diesen Sekunden geht verloren - das kostet
+  // nichts.
+  function handsucheVomBot(id) {
+    const jetzt = Date.now();
+    return HANDSUCHE.bot.some((e) => e.id === id && (e.offen ? jetzt - e.beginn < HANDSUCHE_BOT_MAX_MS : jetzt - e.ende < HANDSUCHE_NACHLAUF_MS));
+  }
+
+  // Dieselben Grenzen wie marktAngebot in sniffer.js, aber streng: nur echte
+  // Zahlen, keine Umwandlung. rareflag nur, wenn es eine echte Zahl ist -
+  // ein umgewandeltes Feld (toInt(null) ist 0) wuerde die Karte sonst als
+  // "Common" verbuchen (siehe gedaechtnisMerken).
+  function handsucheAngebote(liste) {
+    if (!Array.isArray(liste)) return null;
+    const ganz = (v, min, max) => (typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : null);
+    const text = (v) => (typeof v === "string" ? v.slice(0, 16) : "");
+    const ziffern = (v) => (typeof v === "string" && /^\d{1,20}$/.test(v) ? v : "");
+    const out = [];
+    for (const a of liste.slice(0, HANDSUCHE_MAX_ANGEBOTE)) {
+      const item = a && typeof a === "object" ? a.itemData : null;
+      if (!item || typeof item !== "object") continue;
+      const tradeId = ziffern(a.tradeId);
+      const preis = ganz(a.buyNowPrice, 1, 15000000);
+      const assetId = ganz(item.assetId, 1, 1e9);
+      const typ = text(item.itemType);
+      // Vertraege, Fitness und Co. gehoeren nicht ins Gedaechtnis der Spieler.
+      if (!tradeId || preis === null || assetId === null || (typ && typ !== "player")) continue;
+      const ablauf = ganz(a.expires, -1, 345600);
+      const angebot = {
+        tradeId,
+        buyNowPrice: preis,
+        startingBid: ganz(a.startingBid, 0, 15000000) || 0,
+        currentBid: ganz(a.currentBid, 0, 15000000) || 0,
+        expires: ablauf === null ? 0 : ablauf,
+        tradeState: text(a.tradeState),
+        bidState: text(a.bidState),
+        itemData: {
+          id: ziffern(item.id),
+          assetId,
+          resourceId: ganz(item.resourceId, 0, 4e9) || 0,
+          rating: ganz(item.rating, 0, 99) || 0,
+          itemType: typ
+        }
+      };
+      const art = ganz(item.rareflag, 0, 10000);
+      if (art !== null) angebot.itemData.rareflag = art;
+      out.push(angebot);
+    }
+    return out;
+  }
+
+  // Taugt die Handsuche fuer die Verkaufserkennung? Dann kommt der Pfad
+  // zurueck, sonst null - Preise und Angebote zaehlen in beiden Faellen.
+  // anfrageAusPfad selbst bleibt unveraendert (Bot-Pfade laufen wie bisher);
+  // hier gilt zusaetzlich eine Erlaubt-Liste: EAs App kann Felder schicken,
+  // die anfrageAusPfad nicht kennt (z. B. micr oder zone), und jedes davon
+  // koennte falsche Verkaeufe erzeugen.
+  function handsucheErkennung(q, pfad, anzahl) {
+    const nein = (grund) => {
+      HANDSUCHE.grund = grund;
+      return null;
+    };
+    const erlaubt = ["num", "start", "type", ENDPOINTS.idParam, ENDPOINTS.maxBuyParam, ENDPOINTS.minBuyParam, ENDPOINTS.rarityParam, ENDPOINTS.ovrMinParam, ENDPOINTS.ovrMaxParam];
+    for (const name of q.keys()) {
+      if (!erlaubt.includes(name)) return nein("Feld " + str(name, 24));
+      if (q.getAll(name).length !== 1) return nein("Feld doppelt: " + str(name, 24));
+    }
+    // Nur eine Seite wie die des Bots: 20 Angebote + 1 als "es gibt mehr".
+    if (toInt(q.get("num")) !== CONFIG.PAGE_SIZE) return nein("num ist nicht " + CONFIG.PAGE_SIZE);
+    if (!(anzahl > 0)) return nein("leere Antwort");
+    // Dieselbe Adresse kurz hintereinander: EA kann eine gemerkte Antwort
+    // schicken, der ein Angebot fehlt, das der Bot inzwischen gesehen hat.
+    // Der Zeitpunkt wird jedes Mal erneuert - lieber vorsichtig.
+    const jetzt = Date.now();
+    const vorher = HANDSUCHE.zuletzt.get(pfad) || 0;
+    HANDSUCHE.zuletzt.delete(pfad);
+    HANDSUCHE.zuletzt.set(pfad, jetzt);
+    while (HANDSUCHE.zuletzt.size > 50) HANDSUCHE.zuletzt.delete(HANDSUCHE.zuletzt.keys().next().value);
+    if (vorher && jetzt - vorher < HANDSUCHE_GLEICH_MS) return nein("dieselbe Suche vor weniger als 60 s");
+    return pfad;
+  }
+
+  function handsucheUebernehmen(raw, herkunft) {
+    const weg = (grund) => {
+      HANDSUCHE.verworfen += 1;
+      HANDSUCHE.grund = grund;
+    };
+    if (herkunft !== window.location.origin) return weg("fremde Herkunft");
+    if (!raw || typeof raw !== "object") return weg("keine Daten");
+    if (!extensionAlive()) return;
+    const base = typeof raw.base === "string" ? raw.base : "";
+    const m = API_RE.exec(base);
+    if (!m || m[1] !== base) return weg("Adresse passt nicht");
+    if (SESSION.base && SESSION.base !== base) return weg("andere Sitzung");
+    const pfad = typeof raw.pfad === "string" ? raw.pfad : "";
+    if (pfad.length > 600 || !pfad.startsWith(ENDPOINTS.searchPath + "?")) return weg("keine Marktsuche");
+    if (EIGENE_ADRESSEN.includes(base + pfad)) return weg("eigene Suche des Bots");
+    const jetzt = Date.now();
+    HANDSUCHE.zeiten = HANDSUCHE.zeiten.filter((t) => jetzt - t < 60000);
+    if (HANDSUCHE.zeiten.length >= HANDSUCHE_MAX_PRO_MIN) return weg("mehr als " + HANDSUCHE_MAX_PRO_MIN + " Meldungen pro Minute");
+    HANDSUCHE.zeiten.push(jetzt);
+    let q;
+    try {
+      q = new URLSearchParams(pfad.slice(pfad.indexOf("?") + 1));
+    } catch (e) {
+      return weg("Adresse unlesbar");
+    }
+    if (q.get("type") !== "player") return weg("keine Spielersuche");
+    if (handsucheVomBot(toInt(q.get(ENDPOINTS.idParam)) || 0)) return weg("eigene App-Suche des Bots");
+    const angebote = handsucheAngebote(raw.auctionInfo);
+    if (!angebote) return weg("keine Angebotsliste");
+    if (!angebote.length) {
+      if (raw.auctionInfo.length) return weg("keine gueltigen Angebote");
+      // Eine leere Antwort kann auch EAs Drossel sein ("leere Ergebnisse" bei
+      // markierten Konten). Daraus darf kein Verkauf werden - also gar nicht
+      // erst an gedaechtnisMerken geben.
+      HANDSUCHE.leer += 1;
+      HANDSUCHE.at = jetzt;
+      return;
+    }
+    const erkennung = handsucheErkennung(q, pfad, angebote.length);
+    HANDSUCHE.suchen += 1;
+    HANDSUCHE.angebote += angebote.length;
+    if (!erkennung) HANDSUCHE.ohneErkennung += 1;
+    HANDSUCHE.at = jetzt;
+    if (HANDSUCHE.suchen === 1) log("Eigene Marktsuche mitgelesen (" + angebote.length + " Angebote, keine zusaetzliche Anfrage).");
+    gedaechtnisMerken(angebote, erkennung);
+    // Ohne Bot-Lauf kaeme sonst nichts mehr, das den Puffer schreibt - die
+    // letzten Handsuchen gingen beim Schliessen des Tabs verloren. Kostet nur
+    // einen Schreibvorgang im Speicher, keine EA-Anfrage.
+    clearTimeout(HANDSUCHE.timer);
+    HANDSUCHE.timer = setTimeout(() => gedaechtnisVielleichtSichern(), GEDAECHTNIS_SICHERN_MS + 1000);
+  }
+
+  // Verkaufserkennung (02.10.2026). Die Regel steht in markt.js
+  // (verkaeufeAbgleichen): Ein Angebot laesst sich auf dem FUT-Markt nicht
+  // zurueckziehen - fehlt es vor seinem Ablauf in einer vollstaendigen Antwort,
+  // wurde es gekauft. Daraus werden "Bestseller" und echte Verkaufspreise.
+  // Kostet keine EA-Anfrage: Es werden nur Antworten verglichen, die der Bot
+  // sowieso bekommt.
+  const VERKAUF_TRACKER = { beobachtet: new Map(), puffer: [], letzteSicherung: 0, erkannt: 0 };
+  const VERKAUF_SICHERN_MS = 60000;
+
+  // Was hat die Suche gefragt? Nur Spieler-Suchen ohne weitere Filter taugen
+  // fuer den Abgleich - Liga oder Position sieht man einem Angebot nicht an.
+  function anfrageAusPfad(pfad, anzahl) {
+    if (typeof pfad !== "string" || pfad.indexOf("?") < 0) return null;
+    let q;
+    try {
+      q = new URLSearchParams(pfad.slice(pfad.indexOf("?") + 1));
+    } catch (e) {
+      return null;
+    }
+    for (const [, endpunkt] of SCAN_FILTER_FELDER) {
+      if (endpunkt !== "rarityParam" && ENDPOINTS[endpunkt] && q.has(ENDPOINTS[endpunkt])) return null;
+    }
+    const zahl = (name) => toInt(q.get(ENDPOINTS[name])) || 0;
+    const arten = q.get(ENDPOINTS.rarityParam);
+    return {
+      playerId: zahl("idParam"),
+      maxb: zahl("maxBuyParam"),
+      minb: zahl("minBuyParam"),
+      ovrMin: zahl("ovrMinParam"),
+      ovrMax: zahl("ovrMaxParam"),
+      rarities: arten ? arten.split(",").map((x) => toInt(x)).filter((x) => Number.isFinite(x)) : null,
+      start: toInt(q.get("start")) || 0,
+      // Eine Gebotssuche filtert nach dem Gebot, nicht nach dem Sofortkauf.
+      vollstaendig: anzahl < volleSeite() && !q.has(ENDPOINTS.maxBidParam)
+    };
+  }
+
+  function verkaeufeErkennen(auctions, pfad) {
+    const M = typeof FC27Markt === "object" ? FC27Markt : null;
+    if (!M) return;
+    const jetzt = Date.now();
+    const angebote = [];
+    for (const a of auctions) {
+      const item = a && a.itemData;
+      const preis = Number(a && a.buyNowPrice) || 0;
+      const rest = Number(a && a.expires);
+      if (!item || !(preis > 0) || a.tradeId == null || !(rest > 0)) continue;
+      const assetId = toInt(item.assetId) || 0;
+      if (!assetId) continue;
+      const art = typeof item.rareflag === "number" && Number.isFinite(item.rareflag) ? Math.floor(item.rareflag) : -1;
+      const rating = toInt(item.rating) || 0;
+      angebote.push({
+        tradeId: String(a.tradeId), key: priceKey(assetId, rating, art), playerId: basePlayerId(item),
+        rarity: art, rating, preis, endetAt: jetzt + rest * 1000
+      });
+    }
+    const neu = M.verkaeufeAbgleichen(VERKAUF_TRACKER.beobachtet, anfrageAusPfad(pfad, auctions.length), angebote, jetzt);
+    if (neu.length) {
+      VERKAUF_TRACKER.puffer.push(...neu);
+      VERKAUF_TRACKER.erkannt += neu.length;
+    }
+    if (VERKAUF_TRACKER.puffer.length >= 20 || (VERKAUF_TRACKER.puffer.length && jetzt - VERKAUF_TRACKER.letzteSicherung >= VERKAUF_SICHERN_MS)) {
+      verkaeufeSichern();
+    }
+  }
+
+  function verkaeufeSichern() {
+    const M = typeof FC27Markt === "object" ? FC27Markt : null;
+    const neu = VERKAUF_TRACKER.puffer;
+    VERKAUF_TRACKER.puffer = [];
+    VERKAUF_TRACKER.letzteSicherung = Date.now();
+    if (!M || !neu.length) return Promise.resolve();
+    return updateStorage("marktVerkaeufe", (current) => {
+      const alle = current && typeof current === "object" && current.karten && typeof current.karten === "object" ? current.karten : {};
+      return { v: 1, at: Date.now(), karten: M.verkaeufeEintragen(alle, neu, Date.now()) };
+    });
+  }
+
   function gedaechtnisVielleichtSichern() {
     if (!GEDAECHTNIS.puffer.size) return;
     const eilig = GEDAECHTNIS.puffer.size >= GEDAECHTNIS_PUFFER_MAX;
@@ -2700,7 +3047,9 @@
     const puffer = GEDAECHTNIS.puffer;
     GEDAECHTNIS.puffer = new Map();
     GEDAECHTNIS.letzteSicherung = Date.now();
+    verkaeufeSichern();
     if (!puffer.size) return Promise.resolve();
+    marktVerlaufSichern(puffer);
     return updateStorage("preisGedaechtnis", (current) => {
       const jetzt = Date.now();
       const alt = current && typeof current === "object" && current.karten && typeof current.karten === "object" ? current.karten : {};
@@ -2741,6 +3090,31 @@
       }
       GEDAECHTNIS.karten = Math.min(keys.length, GEDAECHTNIS_MAX_KARTEN);
       return { v: 1, at: jetzt, karten: neu };
+    });
+  }
+
+  // Preisverlauf fuer die Markt-Analyse (markt.js, 02.10.2026).
+  //
+  // Je Karte ein Messpunkt pro Sicherung, daraus erkennt markt.js Dips und
+  // steigende Nachfrage. Gespeichert wird NUR der Marktanker (Angebot stand
+  // beim Sehen schon >= 5 Minuten): Ein Lockangebot, das nach Sekunden wieder
+  // weg ist, wuerde sonst einen Dip vortaeuschen, der nie kaufbar war.
+  // Kostet keine EA-Anfrage - die Preise stammen aus den normalen Suchen.
+  function marktVerlaufSichern(puffer) {
+    const M = typeof FC27Markt === "object" ? FC27Markt : null;
+    if (!M) return;
+    const jetzt = Date.now();
+    const punkte = [];
+    for (const [key, e] of puffer) {
+      if (e && e.anker > 0) punkte.push([key, e.anker, e.n]);
+    }
+    if (!punkte.length) return;
+    updateStorage("marktVerlauf", (current) => {
+      const alle = current && typeof current === "object" && current.karten && typeof current.karten === "object" ? current.karten : {};
+      for (const [key, preis, n] of punkte) {
+        alle[key] = M.verlaufEintragen(alle[key], jetzt, preis, n);
+      }
+      return { v: 1, at: jetzt, karten: M.verlaufBegrenzen(alle) };
     });
   }
 
@@ -3253,6 +3627,37 @@
       const all = current && typeof current === "object" ? current : {};
       const cutoff = Date.now() - CONFIG.HISTORY_DAYS * DAY;
       const list = (Array.isArray(all[key]) ? all[key] : []).filter((e) => e && e.t >= cutoff);
+      // Preissprung-Schutz (02.10.2026, siehe CONFIG.PREIS_SPRUNG_AB). Der
+      // neue Marktpreis wird mit dem letzten Eintrag derselben Karte
+      // verglichen. Kein Vergleich ohne Vorgaenger, ohne Marktpreis, bei
+      // einem Vorgaenger aelter als 6 Stunden oder bei anderer gemessener
+      // Chemie - das ist ein anderer Markt, kein Sprung.
+      //
+      // Der Eintrag wird absichtlich direkt veraendert (dasselbe Objekt), damit
+      // runPriceCheck den Hinweis nach dem await melden kann. Scheitert das
+      // Speichern, steht der Hinweis trotzdem im Protokoll - harmlos.
+      // Ein Folge-Check innerhalb von 35 % bestaetigt den Sprung von selbst.
+      // Liegt er wieder am Stand vor dem Sprung, war der Sprung der
+      // Ausreisser - dann wird nicht neu markiert. Nachgemessen wird nie
+      // automatisch: 0 Anfragen.
+      const vorher = list.length ? list[list.length - 1] : null;
+      const altMarkt = Number(vorher && vorher.market) || 0;
+      const neuMarkt = Number(entry && entry.market) || 0;
+      const jetztT = Number(entry && entry.t) || Date.now();
+      const chemAnders = Boolean(vorher && vorher.chemGefiltert === true && entry && entry.chemGefiltert === true && vorher.chem !== entry.chem);
+      if (altMarkt > 0 && neuMarkt > 0 && !chemAnders && jetztT - Number(vorher.t) <= CONFIG.PREIS_SPRUNG_REF_MAX_MS) {
+        const abw = Math.abs(neuMarkt - altMarkt) / altMarkt;
+        const davor = vorher.preisSprung && typeof vorher.preisSprung === "object" ? Number(vorher.preisSprung.vorher) || 0 : 0;
+        const zurueck = davor > 0 && Math.abs(neuMarkt - davor) / davor <= CONFIG.PREIS_SPRUNG_AB;
+        if (abw > CONFIG.PREIS_SPRUNG_AB && !zurueck) {
+          entry.preisSprung = {
+            vorher: altMarkt,
+            vorherT: Number(vorher.t) || 0,
+            abweichung: Math.round(abw * 100) / 100,
+            hinweis: "Preissprung über " + Math.round(CONFIG.PREIS_SPRUNG_AB * 100) + " % zum letzten Preis-Check – unbestätigt, bitte nachmessen."
+          };
+        }
+      }
       list.push(entry);
       all[key] = list.slice(-100);
       const keys = Object.keys(all).filter((k) => Array.isArray(all[k]) && all[k].length);
@@ -3297,12 +3702,13 @@
       }
       if (!alive()) throw new Error("abgebrochen.");
       check.searches += 1;
-      const res = await api(searchPath(player.playerId, maxPrice, start, false, player.rating, 0, player.rarity));
+      const pfad = searchPath(player.playerId, maxPrice, start, false, player.rating, 0, player.rarity);
+      const res = await api(pfad);
       if (!res.ok) throw new Error("Suche: HTTP " + res.status);
       const data = await res.json();
       STATE.rateLimitHits = 0;
       const liste = data && Array.isArray(data.auctionInfo) ? data.auctionInfo.filter(Boolean) : [];
-      gedaechtnisMerken(liste);
+      gedaechtnisMerken(liste, pfad);
       return liste;
     }
 
@@ -3400,7 +3806,14 @@
       if (!alive()) return;
       await savePriceEntry(priceKey(player.playerId, player.rating, player.rarity), entry);
       log("Preis-Check " + playerLabel(player) + ":", entry);
-      endCheck(token, "", false);
+      // Preissprung (02.10.2026): ins Protokoll und als Meldung unter den
+      // Knopf "Preis pruefen". Kein pushEvent - der Preis-Check laeuft nur
+      // ohne Lauf. Und KEIN automatischer neuer Check: Nachmessen kostet
+      // Suchen und bleibt die Entscheidung des Nutzers.
+      if (entry.preisSprung) {
+        warn("Preissprung bei " + playerLabel(player) + ": " + fmt(entry.preisSprung.vorher) + " → " + fmt(entry.market) + " Coins. Zum Kaufen gilt der kleinere, zum Verkaufen der größere Preis – bitte nachmessen.");
+      }
+      endCheck(token, entry.preisSprung ? entry.preisSprung.hinweis : "", false);
     } catch (e) {
       const text = e instanceof HardStop ? e.message : "Preis-Check fehlgeschlagen: " + e.message;
       warn(text);
@@ -3472,7 +3885,7 @@
       const data = await res.json();
       STATE.rateLimitHits = 0;
       const liste = data && Array.isArray(data.auctionInfo) ? data.auctionInfo.filter(Boolean) : [];
-      gedaechtnisMerken(liste);
+      gedaechtnisMerken(liste, path);
       antworten.set(path, liste);
       return liste;
     }
@@ -3937,13 +4350,25 @@
       if (!eintrag) throw new Error("Spieler steht nicht mehr auf der Transferliste. Bitte aktualisieren.");
       if (!eintrag.handelbar) throw new Error("Dieser Spieler ist nicht handelbar.");
       if (eintrag.tradeState === "active") throw new Error("Steht schon im Verkauf.");
-      if (eintrag.eaMin && sofort < eintrag.eaMin) throw new Error("EA erlaubt für diese Karte mindestens " + fmt(eintrag.eaMin) + ".");
-      if (eintrag.eaMax && sofort > eintrag.eaMax) throw new Error("EA erlaubt für diese Karte höchstens " + fmt(eintrag.eaMax) + ".");
       // Startgebot eine Stufe unter dem Sofortkauf: EA verlangt, dass es
       // darunter liegt, und so kauft eher jemand sofort, als lange zu bieten.
-      let start = roundDownToStep(sofort - 1);
-      if (eintrag.eaMin && start < eintrag.eaMin) start = eintrag.eaMin;
-      if (!(start > 0) || start >= sofort) throw new Error("Für diesen Preis gibt es kein gültiges Startgebot.");
+      // Seit 02.10.2026 aus der gemeinsamen Rechnung einstellPreise: Ein
+      // Sofortkauf genau auf eaMin ging vorher als Anfrage raus und kam als
+      // Ablehnung zurueck (Fund 25). Ein von Hand gewaehlter Preis wird hier
+      // nicht still geaendert - der Knopf im Popup zeigt schon den Preis aus
+      // derselben Rechnung, eine Abweichung heisst veraltete Daten. Jede
+      // Ablehnung passiert vor verkaufAusfuehren, also ohne EA-Anfrage. Eine
+      // Gewinnpruefung kommt hier nicht dazu: Dieser Weg hat bewusst keinen
+      // Verlustschutz, der Nutzer entscheidet selbst.
+      const ep = einstellPreise(sofort, eintrag.eaMin, eintrag.eaMax);
+      if (ep.fehler === "spanne") throw new Error("EAs Preisspanne für diese Karte lässt keinen Sofortkauf über dem Mindestpreis zu.");
+      if (ep.fehler) throw new Error("Für diesen Preis gibt es kein gültiges Startgebot.");
+      if (ep.sofort !== sofort) {
+        throw new Error(ep.grenze === "min"
+          ? "EA erlaubt für diese Karte frühestens " + fmt(ep.sofort) + " (eine Stufe über dem Mindestpreis " + fmt(eintrag.eaMin) + "). Bitte die Liste aktualisieren."
+          : "EA erlaubt für diese Karte höchstens " + fmt(eintrag.eaMax) + ".");
+      }
+      const start = ep.start;
       await verkaufAusfuehren("einstellen", { itemId, startPreis: start, sofortPreis: sofort, dauer: VERKAUF_DAUER_S });
       const name = eintrag.name || "Spieler";
       await updateStorage("transferliste", (current) => {
@@ -4072,11 +4497,14 @@
       // (scripts.js Z. 59455-59473: nur Such- und Gebots-Anfragen stoppen).
       // Hier nur melden; die naechste Suche stoppt selbst, wenn EA wirklich
       // ein Problem hat. Dann geht es unten wie bei jedem anderen Fehler weiter.
-      if (HARD_STOP[code] && STATE.fstModus === true) {
+      // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): dann auch im
+      // FST-Modus anhalten wie im strengen Modus.
+      const warnHalt = STATE.fstModus === true && STATE.warnungStopp === true && WARNUNG_CODES.has(code);
+      if (HARD_STOP[code] && STATE.fstModus === true && !warnHalt) {
         const meldung = "Verkaufs-Wache: " + HARD_STOP[code] + " Der Lauf geht weiter.";
         pushEvent("warn", meldung);
       } else if (HARD_STOP[code]) {
-        VERKAUFS_WACHE.halt = { text: "Gestoppt: " + HARD_STOP[code], level: "error" };
+        VERKAUFS_WACHE.halt = { text: "Gestoppt: " + HARD_STOP[code], level: "error", eaWarnung: WARNUNG_CODES.has(code) ? code : 0 };
         return null;
       }
       // Antwortet die Seite gar nicht, hoert der Bot eine Weile auf zu fragen.
@@ -4126,15 +4554,16 @@
       }
       const code = toInt(e && e.status) || 0;
       // FST-Modus (Punkt 5): nur melden, der Lauf geht weiter. Ist die Liste
-      // wirklich voll, stoppt die Platz-Regel (platzProblem).
-      if (STATE.fstModus === true) {
+      // wirklich voll, stoppt die Platz-Regel (platzProblem). Ausnahme
+      // (02.10.2026): Haken "Bei EA-Warnung sofort stoppen" und ein Warn-Code.
+      if (STATE.fstModus === true && !(STATE.warnungStopp === true && WARNUNG_CODES.has(code))) {
         const meldung = "Verkaufs-Wache: Abräumen hat nicht geklappt – " + (HARD_STOP[code] || e.message) + " Der Lauf geht weiter.";
         warn(meldung);
         pushEvent("warn", meldung);
         return;
       }
       VERKAUFS_WACHE.halt = HARD_STOP[code]
-        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error" }
+        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error", eaWarnung: WARNUNG_CODES.has(code) ? code : 0 }
         : { text: "Gestoppt: Abräumen hat nicht geklappt – " + e.message, level: "warn" };
       return;
     }
@@ -4173,15 +4602,15 @@
         return;
       }
       const code = toInt(e && e.status) || 0;
-      // FST-Modus (Punkt 5): wie oben nur melden.
-      if (STATE.fstModus === true) {
+      // FST-Modus (Punkt 5): wie oben nur melden, mit derselben Ausnahme.
+      if (STATE.fstModus === true && !(STATE.warnungStopp === true && WARNUNG_CODES.has(code))) {
         const meldung = "Verkaufs-Wache: Nachprüfen nach dem Abräumen hat nicht geklappt – " + (HARD_STOP[code] || e.message) + " Der Lauf geht weiter.";
         warn(meldung);
         pushEvent("warn", meldung);
         return;
       }
       VERKAUFS_WACHE.halt = HARD_STOP[code]
-        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error" }
+        ? { text: "Gestoppt: " + HARD_STOP[code], level: "error", eaWarnung: WARNUNG_CODES.has(code) ? code : 0 }
         : { text: "Gestoppt: Nachprüfen nach dem Abräumen hat nicht geklappt – " + e.message, level: "warn" };
       return;
     }
@@ -4364,10 +4793,14 @@
 
   // code: "filter" = nur dieser Filter ist fertig, die Rotation darf weiter.
   // "gesamt" = alles beenden. Ohne Angabe entscheidet der Level.
-  function stop(message, level, leise, code) {
+  // eaWarnung (02.10.2026): EA-Code, wenn der Lauf wegen einer dringenden
+  // Warnung endet (WARNUNG_CODES). Dann Warnton immer und stehende Meldung.
+  function stop(message, level, leise, code, eaWarnung) {
     if (STATE.running) log("Stopp:", message);
     if (STATE.run && STATE.run.token === STATE.token && !STATE.run.reason) STATE.run.reason = message;
     const wasRunning = STATE.running;
+    const dringend = wasRunning && WARNUNG_CODES.has(toInt(eaWarnung));
+    if (dringend && STATE.run && STATE.run.token === STATE.token) STATE.run.eaWarnung = toInt(eaWarnung);
     STATE.running = false;
     fstAbgleichen();
     STATE.token += 1;
@@ -4379,11 +4812,12 @@
     STATE.letzterStopp = { code: code || (level === "error" ? "gesamt" : "filter"), message, level, t: Date.now() };
     gedaechtnisSichern().catch(() => {}); // gesammelte Preise sichern
     if (STATE.letzterStopp.code === "gesamt") rotationBeenden(message);
-    if (wasRunning && (level === "done" || level === "error")) notify(message, "ende");
+    if (wasRunning && (level === "done" || level === "error")) notify(message, "ende", dringend);
     // Ton nur, wenn der Bot von selbst aufhoert. Stopp-Knopf ("idle") und
     // Not-Aus (leise) bleiben still - da weiss der Nutzer ja Bescheid.
     if (wasRunning && !leise) {
-      if (level === "error") tonSpielen("warnung");
+      if (dringend) tonSpielen("warnung", null, true);
+      else if (level === "error") tonSpielen("warnung");
       else if (level === "done" || level === "warn") tonSpielen("ende");
     }
   }
@@ -4657,11 +5091,17 @@
   async function sucheMitStundenPause(target, run, jitterMin, jitterMax) {
     const obergrenze = Number(jitterMax) >= Number(target.maxPrice) ? Number(jitterMax) : Number(target.maxPrice);
     const pfad = searchPath(target.playerId, obergrenze, 0, run.cfg.bidSniping, target.rating, jitterMin, target.rarity);
+    run.letzterSuchPfad = pfad; // fuer die Verkaufserkennung (gedaechtnisMerken)
+    // Beginn der echten Suche merken (02.10.2026): Ab hier zaehlt der Abstand
+    // fuer das gleichmaessige Tempo (suchWarteMs). Nach einer Wartepause am
+    // Stundenlimit wird neu gesetzt - die Wartezeit zaehlt nicht als Abstand.
     try {
+      run.letzteSucheAt = Date.now();
       return await api(pfad);
     } catch (e) {
       if (!(e instanceof HardStop)) throw e;
       if (!(await stundenPause(run, e.message))) throw e;
+      run.letzteSucheAt = Date.now();
       return await api(pfad);
     }
   }
@@ -4726,7 +5166,7 @@
     if (data && typeof data.credits === "number") setCredits(data.credits);
     const auctions = data && Array.isArray(data.auctionInfo) ? data.auctionInfo.filter(Boolean) : [];
     noteItemFields(auctions);
-    gedaechtnisMerken(auctions); // kostet nichts: die Angebote sind schon da
+    gedaechtnisMerken(auctions, run.letzterSuchPfad); // kostet nichts: die Angebote sind schon da
     // Marktaktivitaet aus zwei Laufsuchen desselben Spielers (27.09.2026).
     // Kostet ebenfalls keine Anfrage: Die Angebote liegen schon vor.
     // Uebergeben wird genau das Preisfenster, mit dem wirklich gesucht wurde -
@@ -5276,6 +5716,14 @@
     if (festFilter >= CONFIG.LIST_MIN_PRICE) {
       return { preis: festFilter, quelle: "festpreis-filter", alterMs: 0, eaMin: 0, eaMax: 0 };
     }
+    // Chance (02.10.2026): Gekauft wurde im Dip, verkauft wird zum Ziel. Ein
+    // Preis-Check von vorhin zeigt nur den gefallenen Preis - damit waere der
+    // ganze Gewinn der Chance weg. Darum hier das mitgebrachte Ziel zuerst,
+    // solange es frisch ist. Der Verlustschutz in gleichEinstellen bleibt.
+    const chanceAt = toInt(target && target.salePriceAt);
+    if (target && target.chance === true && toInt(target.salePrice) > 0 && chanceAt > 0 && Date.now() - chanceAt <= CONFIG.LIST_PRICE_MAX_AGE_MS) {
+      return { preis: toInt(target.salePrice), quelle: "chance-ziel", alterMs: Date.now() - chanceAt, eaMin: 0, eaMax: 0 };
+    }
     // Der globale Festpreis steht danach und veraltet auch nie - wie bei FST.
     const fest = toInt(STATE.listFestpreis);
     if (fest >= CONFIG.LIST_MIN_PRICE) {
@@ -5290,14 +5738,32 @@
       entry = null;
     }
     const jetzt = Date.now();
+    // Preissprung (02.10.2026, siehe savePriceEntry): Ist der neueste Eintrag
+    // als unbestaetigter Sprung markiert, gilt beim Verkaufen der groessere
+    // der beiden Preise. Ein echter Absturz kostet so nur Zeit - die Karte
+    // bleibt liegen, Verlust gibt es keinen. Ein Fehlpreis im leeren Markt
+    // verschenkt dagegen die Karte. Nachgemessen wird nicht automatisch.
+    // Dieselbe Regel steht in popup.js verkaufVorschlag - beide Stellen
+    // muessen denselben Preis rechnen. Lokal, damit der Abschnitt ohne
+    // weitere Hilfen auskommt.
+    const mitSprung = (e, vp) => {
+      const s = e && e.preisSprung && typeof e.preisSprung === "object" ? e.preisSprung : null;
+      if (!s) return { preis: vp.preis, sprung: null };
+      const vorher = plausiblePrice(s.vorher);
+      const alt = vorher > Number(e.market) ? verkaufsPreisAusEintrag({ market: vorher, eaMin: e.eaMin, eaMax: e.eaMax }, STATE.preisMethode) : null;
+      const nimmAlt = Boolean(alt && alt.preis > vp.preis);
+      return { preis: nimmAlt ? alt.preis : vp.preis, sprung: { vorher, markt: Number(e.market) || 0, genommen: nimmAlt ? "vorher" : "neu" } };
+    };
     if (entry && Number(entry.market) > 0 && jetzt - Number(entry.t) <= CONFIG.LIST_PRICE_MAX_AGE_MS) {
       const vp = verkaufsPreisAusEintrag(entry, STATE.preisMethode);
+      const ps = mitSprung(entry, vp);
       return {
-        preis: vp.preis,
+        preis: ps.preis,
         quelle: vp.quelle,
         alterMs: jetzt - Number(entry.t),
         eaMin: plausiblePrice(entry.eaMin),
-        eaMax: plausiblePrice(entry.eaMax)
+        eaMax: plausiblePrice(entry.eaMax),
+        sprung: ps.sprung
       };
     }
     // Ruecklage: der Preis, den die Leiste beim Start mitgegeben hat - aber
@@ -5324,12 +5790,14 @@
     if (STATE.preisLangeNutzen && entry && Number(entry.market) > 0 &&
         jetzt - Number(entry.t) <= CONFIG.LIST_PRICE_LANG_MAX_AGE_MS) {
       const vpAlt = verkaufsPreisAusEintrag(entry, STATE.preisMethode);
+      const psAlt = mitSprung(entry, vpAlt);
       return {
-        preis: vpAlt.preis,
+        preis: psAlt.preis,
         quelle: vpAlt.quelle,
         alterMs: jetzt - Number(entry.t),
         eaMin: plausiblePrice(entry.eaMin),
-        eaMax: plausiblePrice(entry.eaMax)
+        eaMax: plausiblePrice(entry.eaMax),
+        sprung: psAlt.sprung
       };
     }
     const alt = entry ? " Der letzte Preis-Check ist " + Math.round((jetzt - Number(entry.t)) / 60000) + " Minuten alt." : " Es gibt noch keinen Preis-Check.";
@@ -5386,19 +5854,40 @@
         }
       }
     }
-    let sofort = roundDownToStep(p.preis);
-    if (eaMax && sofort > eaMax) sofort = roundDownToStep(eaMax);
-    if (eaMin && sofort < eaMin) sofort = eaMin;
+    // Startgebot und Sofortkauf aus der gemeinsamen Rechnung (02.10.2026).
+    // Frueher wurde der Sofortkauf auf genau eaMin geklemmt und das Startgebot
+    // durfte gleich hoch sein - genau das lehnt EA ab (Fund 25/26). Jetzt
+    // liegt der Sofortkauf mindestens eine Stufe ueber eaMin, das Startgebot
+    // eine Stufe darunter. Eine zu enge Spanne wird gar nicht erst geschickt.
+    const ep = einstellPreise(p.preis, eaMin, eaMax);
+    if (ep.fehler === "spanne") {
+      return { ok: false, grund: "EAs Preisspanne (" + fmt(eaMin) + " bis " + fmt(eaMax) + ") lässt keinen Sofortkauf über dem Mindestpreis zu." };
+    }
+    const sofort = ep.sofort;
     if (!(sofort >= CONFIG.LIST_MIN_PRICE)) return { ok: false, grund: "Verkaufspreis zu niedrig (" + fmt(sofort) + " Coins)." };
-    let start = roundDownToStep(sofort - 1);
-    if (eaMin && start < eaMin) start = eaMin;
-    // Liegt der Preis genau auf dem EA-Minimum, darf das Startgebot gleich
-    // hoch sein - tiefer geht es dort nicht.
-    if (!(start > 0) || start > sofort) return { ok: false, grund: "Für " + fmt(sofort) + " Coins gibt es kein gültiges Startgebot." };
+    if (ep.fehler) return { ok: false, grund: "Für " + fmt(sofort) + " Coins gibt es kein gültiges Startgebot." };
+    const start = ep.start;
     // Verlustschutz. Hier steht ein echtes return - anders als bei FST.
     const netto = Math.floor(sofort * (1 - CONFIG.SALE_FEE));
     if (!(netto > kaufPreis)) {
       return { ok: false, grund: "Kein Gewinn: " + fmt(sofort) + " Coins bringen nach 5 % Gebühr nur " + fmt(netto) + ", gekauft für " + fmt(kaufPreis) + "." };
+    }
+    // Verlustschutz auch fuers Startgebot (02.10.2026, Fund 26). Bietet nur
+    // einer zum Startgebot, geht die Karte dafuer weg: Kauf 949, Sofortkauf
+    // 1.000, Start 950 brachte nach Gebuehr 902 - 47 Coins Verlust.
+    //
+    // Anheben geht nicht: Das Startgebot steht schon auf der hoechsten Stufe
+    // unter dem Sofortkauf. Noch hoeher waere es gleich dem Sofortkauf, und
+    // das lehnt EA ab. Beide Preise hochzusetzen hiesse ueber dem gemessenen
+    // Markt einstellen - die Karte verkauft sich schlechter, und der Preis
+    // wuerde an der Preisermittlung vorbei veraendert. Darum: nicht
+    // einstellen. executeBuy schiebt die Karte dann wie bei jedem anderen
+    // Grund auf die Transferliste - eine Anfrage statt der Einstell-Anfrage,
+    // also keine zusaetzliche. Zum Selbstkostenpreis (gleich) ist erlaubt:
+    // das ist kein Verlust.
+    const nettoStart = Math.floor(start * (1 - CONFIG.SALE_FEE));
+    if (nettoStart < kaufPreis) {
+      return { ok: false, grund: "Startgebot " + fmt(start) + " brächte nach 5 % Gebühr nur " + fmt(nettoStart) + ", gekauft für " + fmt(kaufPreis) + " – nicht eingestellt, damit ein einzelnes Gebot keinen Verlust bringt." };
     }
     await sleep(randomBetween(CONFIG.LIST_STEP_MIN_MS, CONFIG.LIST_STEP_MAX_MS));
     await reserveUsage("aktion", target.key);
@@ -5413,7 +5902,7 @@
       return { ok: false, grund: "Einstellen ohne klare Antwort: " + e.message };
     }
     if (!res.ok) return { ok: false, grund: "EA hat das Einstellen abgelehnt (HTTP " + res.status + ")." };
-    return { ok: true, sofort, start, quelle: p.quelle, alterMin: Math.round(p.alterMs / 60000) };
+    return { ok: true, sofort, start, quelle: p.quelle, alterMin: Math.round(p.alterMs / 60000), sprung: p.sprung || null };
   }
 
   // ---------------------------------------------------------------------------
@@ -5937,7 +6426,14 @@
         const preisAlt = Number(angebot.alterMin) >= 60
           ? " Der Verkaufspreis ist " + Math.round(Number(angebot.alterMin) / 60) + " Std. alt."
           : "";
-        const t = target.playerName + " steht für " + fmt(angebot.sofort) + " Coins im Verkauf (1 Stunde, Start " + fmt(angebot.start) + ")." + preisAlt;
+        // Unbestaetigter Preissprung (02.10.2026): muss im Verkaufs-Log
+        // stehen, sonst wundert sich jemand ueber den hoeheren Preis.
+        const sprungText = angebot.sprung
+          ? (angebot.sprung.genommen === "vorher"
+            ? " Preissprung unbestätigt: eingestellt zum vorigen, höheren Preis (" + fmt(angebot.sprung.vorher) + " statt " + fmt(angebot.sprung.markt) + ") – bitte nachmessen."
+            : " Preissprung unbestätigt (vorher " + fmt(angebot.sprung.vorher) + ", jetzt " + fmt(angebot.sprung.markt) + ") – bitte nachmessen.")
+          : "";
+        const t = target.playerName + " steht für " + fmt(angebot.sofort) + " Coins im Verkauf (1 Stunde, Start " + fmt(angebot.start) + ")." + preisAlt + sprungText;
         setMessage(t, "run");
         pushEvent("verkauf", t);
         log(t);
@@ -5952,6 +6448,9 @@
         playerId: target.playerId,
         playerName: target.playerName,
         rating: toInt(auction.itemData && auction.itemData.rating) || 0,
+        // Der Kartenschluessel (02.10.2026): So laesst sich der echte Gewinn
+        // eines Filters aus Kauf und Verkauf zusammensetzen (popup.js realProfitStats).
+        key: target.key || "",
         price,
         tradeId,
         // Die Karten-ID: So findet der Verkaufs-Helfer den Kauf wieder.
@@ -5999,6 +6498,13 @@
     // weiter auf jede Chemie geboten, obwohl der Preis fuer eine bestimmte
     // gemessen wurde. Genau das Loch, das isMatch beim Sofortkauf schliesst.
     if (!cfg.bidSniping || !isMatch(auction, target.playerId, target.rating, target.rarity, target.chem)) return false;
+    // Nie auf eigene Auktionen bieten und nie gegen sich selbst, wenn EA uns
+    // schon als Hoechstbietenden fuehrt (02.10.2026) - etwa nach einem
+    // Handgebot oder einem Gebot aus einem frueheren Lauf. Die openBids-
+    // Pruefung unten kennt nur Gebote DIESES Laufs. Vorbild MagicBuyer
+    // (tradeOwner, fremde Gebote nie anfassen). Spart Anfragen.
+    if (auction.tradeOwner === true) return false;
+    if (String(auction.bidState || "").toLowerCase() === "highest") return false;
     const left = secondsLeft(auction);
     if (!(left > 0) || left > cfg.bidSeconds) return false;
 
@@ -6264,7 +6770,9 @@
     STAPEL.weg = str(raw && raw.weg, 16);
     // EAs eigene Antwort auf "ist die Transferliste voll?" (27.09.2026).
     // Nur echtes true oder false uebernehmen - alles andere heisst "EA hat
-    // nichts gesagt", und dann gilt weiter die eigene Zaehlung.
+    // nichts gesagt", und dann gilt weiter die eigene Zaehlung. Seit
+    // 02.10.2026 schickt sniffer.js true/false nur bei geladener
+    // Stapelgroesse (getPileSize > 0), sonst null.
     STAPEL.vollTransfer = raw && typeof raw.vollTransfer === "boolean" ? raw.vollTransfer : null;
     // Kein stiller Verlust: gibt der Speicher der App nichts her, gilt EAs
     // eigene Zahl aus usermassinfo weiter - und "weg" sagt, woher sie kommt.
@@ -6537,6 +7045,8 @@
   // Kehrseite: Das Stundenlimit ist statt nach rund 30 Minuten schon nach gut
   // 10 erreicht. Danach wartet der Bot bis zur naechsten Stunde, statt
   // aufzuhoeren (siehe die Wartepause am Stundenlimit).
+  // 02.10.2026: Im strengen Modus nicht mehr - dort verteilt suchWarteMs die
+  // Suchen gleichmaessig ueber die Stunde.
   //
   // FSTs eigene Einstufung des Risikos, aus seinem Hilfetext (Z. 55874):
   // Langsam = geringes, Normal = mittleres, Turbo = hohes Risiko fuer eine
@@ -6548,8 +7058,62 @@
     if (cfg.speedMode === "safe") return streuen(3600, 4990, 0.20, 900, 1800);
     // FST: hw(2520,3111) + 50 % Chance auf hw(120,420)
     if (cfg.speedMode === "turbo") return streuen(2520, 3111, 0.50, 120, 420);
+    // "Konto-schonend" (02.10.2026) nach MagicBuyers Profil "prudent": 8 bis
+    // 14 s je Suche, hoechstens 6 Suchen pro Minute (die 10-s-Untergrenze ab
+    // Suchbeginn steht in suchWarteMs). Gedacht fuer die Zeit nach einer
+    // Sperre. Im Mittel rund 10,6 s - popup.js tempoSekunden rechnet mit 10,7.
+    if (cfg.speedMode === "schonend") return streuen(8000, 12500, 0.30, 600, 1500);
     // FST: hw(3310,4010) + 50 % Chance auf hw(100,600)
     return streuen(3310, 4010, 0.50, 100, 600);
+  }
+
+  // Gleichmaessiges Tempo im strengen Modus (02.10.2026).
+  //
+  // Bisher war das Stundenlimit nach rund 10 Minuten Dauerfeuer verbraucht,
+  // danach kamen 45 Minuten Stille. Genau so eine Ballung sieht EA am
+  // ehesten - und das Konto wurde schon einmal gesperrt. Jetzt liegt zwischen
+  // zwei Lauf-Suchen mindestens 3600 s / Stundenlimit (bei 150 also 24 s),
+  // gemessen ab Beginn der letzten Suche. Die Grenze pro Stunde bleibt
+  // dieselbe, nur ohne Ballung - wegen Zufall und Pausen sind es im Mittel
+  // etwas weniger (in der Simulation rund 140 statt 150). Kostet keine
+  // Anfrage, der Bot wartet nur laenger.
+  //
+  // Der Zufall geht nur nach oben (0 bis 15 Prozent): Nach unten liefe der
+  // Lauf sonst selbst ins Stundenlimit. Der FST-Modus bleibt unveraendert
+  // (dort gibt es keine Stundengrenze), darum gibt die Funktion dort 0
+  // zurueck, bevor sie wuerfelt - die Zufallsfolge bleibt so dieselbe.
+  //
+  // popup.js laufzeitRechnung rechnet mit dem Mittel 1,075 - wer die
+  // Streuung aendert, muss es dort nachziehen.
+  const GLEICHMASS_STREUUNG = 0.15;
+  // Hoechstens 6 Suchen pro Minute bei "Konto-schonend" (MagicBuyer prudent).
+  const SCHONEND_MIN_ABSTAND_MS = 10000;
+
+  function gleichmaessigAbstandMs(limitStunde, fst) {
+    if (fst === true) return 0;
+    const limit = Number(limitStunde);
+    if (!(limit > 0) || !Number.isFinite(limit)) return 0;
+    const basis = Math.ceil(3600000 / limit);
+    return basis + randomBetween(0, Math.round(basis * GLEICHMASS_STREUUNG));
+  }
+
+  // Wie lange vor der naechsten Lauf-Suche gewartet wird. searchDelay gilt wie
+  // bisher ab Rundenende, die Untergrenze ab Beginn der letzten Suche. Was seit
+  // dem Suchbeginn schon vergangen ist (Kauf, Verschieben, Einstellen,
+  // Sicherheitspause), wird angerechnet - nach einer Pause wird also nicht
+  // noch einmal 24 s gewartet.
+  //
+  // Reihenfolge mit Absicht: erst searchDelay, dann hoechstens EIN weiterer
+  // Zufallswert. Im FST-Modus bleibt die Zufallsfolge so genau wie vorher.
+  function suchWarteMs(cfg, seitSuchbeginnMs, limitStunde, fst) {
+    const abRundenende = searchDelay(cfg);
+    let abSuchbeginn = gleichmaessigAbstandMs(limitStunde, fst);
+    if (cfg.speedMode === "schonend") abSuchbeginn = Math.max(abSuchbeginn, SCHONEND_MIN_ABSTAND_MS);
+    const seit = Number(seitSuchbeginnMs);
+    // Infinity = noch keine Suche in diesem Lauf: nichts nachholen. Negativ
+    // (Uhr zurueckgestellt): die volle Untergrenze, nie eine negative Wartezeit.
+    const fehlt = Number.isFinite(seit) ? abSuchbeginn - Math.max(0, seit) : 0;
+    return Math.max(abRundenende, fehlt);
   }
 
   // Die laengeren Ruhepausen - seit 25.09.2026 nach FSTs Standardwerten
@@ -6611,7 +7175,11 @@
         longMs: Math.max(3134, randomBetween(63000, 117000))
       };
     }
+    // "Konto-schonend" (02.10.2026, MagicBuyer prudent): alle 12 bis 18 Suchen
+    // 1 bis 2 Minuten. Die zweite, laengere Stufe darunter gilt auch hier,
+    // damit der Pausen-Faktor 1,425 in popup.js stimmt.
     const plan =
+      cfg.pausePreset === "schonend" ? { every: randomBetween(12, 18), ms: Math.max(3134, randomBetween(60000, 120000)) } :
       cfg.pausePreset === "short" ? { every: streuenAnzahl(45, 5), ms: streuen(45000) } :
       cfg.pausePreset === "long" ? { every: streuenAnzahl(30, 5), ms: streuen(180000) } :
       // FSTs Standard: alle 45 Suchen 90 Sekunden.
@@ -6634,6 +7202,13 @@
   function kaufPruefung(auction, target, run, token, gesuchtUm) {
     const cfg = run.cfg;
     if (!isCurrent(token)) return "ende";
+    // Das eigene Angebot nie zurueckkaufen (02.10.2026), etwa eine eigene
+    // "Gleich verkaufen"-Karte mit Festpreis oder Chance-Ziel unter dem
+    // Zielpreis. EA wuerde ablehnen (vermutlich mit einem harten Code), und
+    // die Anfrage zaehlte trotzdem. tradeOwner steht in EAs Suchantwort und
+    // im App-Weg (sniffer.js appAuktion), Vorbild MagicBuyer analyzeResults.
+    // Kostet nichts: Es geht keine Anfrage raus, also auch keine Pause.
+    if (auction && auction.tradeOwner === true) return "weiter";
     // Alte Trefferliste (25.09.2026): Nach Kauf, Verschieben und Pause ist das
     // dritte Angebot dieser Suche ueber eine Viertelminute alt. Was so lange
     // offen stand, ist meistens schon weg - die Anfrage zaehlt aber trotzdem
@@ -6743,7 +7318,13 @@
     // Erster Blick in die Transferliste - kostenlos aus dem Speicher der App.
     // Alte Verkaeufe werden dabei gemerkt, zaehlen aber nicht zu diesem Lauf.
     // Bewusst OHNE await: Der Lauf soll darauf nicht warten.
-    verkaeufePruefen(run, token, "start").catch(() => {});
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): Meldet schon dieser
+    // erste Blick eine EA-Warnung, endet der Lauf. Sonst wie bisher.
+    verkaeufePruefen(run, token, "start").then((halt) => {
+      if (halt && halt.eaWarnung && STATE.fstModus === true && STATE.warnungStopp === true && isCurrent(token)) {
+        stop(halt.text, halt.level, false, undefined, halt.eaWarnung);
+      }
+    }).catch(() => {});
 
     while (isCurrent(token)) {
       // 25.09.2026: Steht nach einer unklaren Antwort von EA eine Bremse, wird
@@ -6756,7 +7337,7 @@
         await settleViaWatchlist(run);
       } catch (e) {
         if (e instanceof HardStop) {
-          stop(e.message, "error");
+          stop(e.message, "error", false, undefined, e.eaWarnung);
           break;
         }
         warn("Beobachtungsliste: " + e.message);
@@ -6861,6 +7442,16 @@
         // Kommt nach dem ersten Kauf die Pause, soll das beste Angebot schon weg sein.
         const hits = zuWeitJetzt ? [] : auctions.filter((a) => isTarget(a, target)).sort((a, b) => bin(a) - bin(b));
         if (auctions.length > 0 && hits.length === 0) logMismatch(auctions, target);
+        // Kein stiller Verlust (02.10.2026): Einmal je Lauf sagen, dass ein
+        // eigenes Angebot unter den Treffern lag und uebersprungen wird
+        // (kaufPruefung). Sonst wundert man sich, warum der Bot ein billiges
+        // Angebot liegen laesst.
+        if (!run.eigeneGemeldet && hits.some((a) => a.tradeOwner === true)) {
+          run.eigeneGemeldet = true;
+          const text = "Eigenes Angebot übersprungen (" + playerLabel(target) + "): Der Bot kauft nie eigene Karten zurück.";
+          log(text);
+          pushEvent("filter", text);
+        }
         // Gesehene Angebote fuer den Hinweis "kein Angebot bis ..." zaehlt
         // search() - dort ist bekannt, wonach EA gefiltert hat.
 
@@ -6940,7 +7531,7 @@
         }
       } catch (e) {
         if (e instanceof HardStop) {
-          stop(e.message, "error");
+          stop(e.message, "error", false, undefined, e.eaWarnung);
           break;
         }
         // FST-Modus (Punkt 6): wie ein Netzfehler zaehlen, nicht als Suchfehler.
@@ -6968,7 +7559,7 @@
         }
         const haltT = await verkaeufePruefen(run, token, "takt");
         if (haltT) {
-          stop(haltT.text, haltT.level);
+          stop(haltT.text, haltT.level, false, undefined, haltT.eaWarnung);
           break;
         }
       }
@@ -6997,11 +7588,20 @@
         // Pause her und kostet keine Suchzeit; gelesen wird aus dem Speicher
         // der App, also ohne Anfrage an EA.
         const wache = verkaeufePruefen(run, token, "pause").catch(() => null);
+        // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): Eine EA-Warnung
+        // der Wache beendet den Lauf sofort, nicht erst am Ende der Pause.
+        let wacheGestoppt = false;
+        wache.then((h) => {
+          if (h && h.eaWarnung && STATE.fstModus === true && STATE.warnungStopp === true && isCurrent(token)) {
+            wacheGestoppt = true;
+            stop(h.text, h.level, false, undefined, h.eaWarnung);
+          }
+        }).catch(() => {});
         await wait(dauer, token);
         run.pauseBis = 0;
         const haltP = await wache;
         if (haltP) {
-          stop(haltP.text, haltP.level);
+          if (!wacheGestoppt) stop(haltP.text, haltP.level, false, undefined, haltP.eaWarnung);
           break;
         }
         if (!isCurrent(token)) break;
@@ -7014,7 +7614,21 @@
         run.nextPauseIn = nextBreak.every;
         if (isCurrent(token)) setMessage(runningMessage(cfg), "run");
       }
-      await wait(Math.max(searchDelay(cfg), STATE.pauseUntil - Date.now()), token);
+      // Gleichmaessiges Tempo (02.10.2026, siehe suchWarteMs): Im strengen
+      // Modus mindestens 3600 s / Stundenlimit ab Beginn der letzten Suche.
+      // Kauf, Verschieben, Einstellen und Sicherheitspausen werden
+      // angerechnet. Das wirksame Limit ist suchLimitStunde() - eigene Grenze,
+      // Tippfehler-Riegel und Sperr-Riegel (Standard 150, also 24 s).
+      const seitSuchbeginn = run.letzteSucheAt > 0 ? Date.now() - run.letzteSucheAt : Infinity;
+      const abstandMs = suchWarteMs(cfg, seitSuchbeginn, suchLimitStunde(), STATE.fstModus === true);
+      // Bei langer Wartezeit ein Hinweis, sonst sieht es wie ein Haenger aus
+      // (Muster wie kaufAbstand). Reine Anzeige, zieht keinen Zufallswert.
+      // Eine Warnung bleibt stehen - sie ist wichtiger.
+      const warteText = STATE.fstModus !== true && abstandMs >= 8000 && STATE.level === "run"
+        ? "Nächste Suche in " + Math.round(abstandMs / 1000) + " s – gleichmäßig über die Stunde verteilt." : "";
+      if (warteText) setMessage(warteText, "run");
+      await wait(Math.max(abstandMs, STATE.pauseUntil - Date.now()), token);
+      if (warteText && isCurrent(token) && STATE.message === warteText) setMessage(runningMessage(cfg), "run");
     }
 
     // Nur der aktuelle Loop darf "running" zuruecksetzen (sonst killt ein alter
@@ -7033,7 +7647,13 @@
     // Noch offene Gebote zum Schluss klaeren: Ein Zuschlag, der erst nach dem
     // Stoppen sichtbar wird, soll trotzdem im Kauflog landen.
     const ungeklaert = () => (run.unclearBids ? run.unclearBids.size : 0);
-    if ((run.openBids.size || ungeklaert()) && extensionAlive()) {
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026): Nach einem Stopp
+    // wegen einer EA-Warnung fragt der Bot nicht noch einmal bei EA nach -
+    // sofort heisst sofort. Im strengen Modus haelt die Startsperre diese
+    // Abfrage ohnehin zurueck (reserveUsage prueft cooldownBlock). Die
+    // Hinweise "Gebot(e) noch offen" darunter bleiben. Ohne Haken wie bisher.
+    const nachWarnungStill = run.fst === true && STATE.warnungStopp === true && Boolean(run.eaWarnung);
+    if ((run.openBids.size || ungeklaert()) && extensionAlive() && !nachWarnungStill) {
       WATCHLIST.lastAt = 0;
       try {
         await settleViaWatchlist(run, true);
@@ -7065,6 +7685,16 @@
     if (STATE.running) return { ok: false, error: "Läuft bereits. Erst stoppen." };
     if (STATE.check.running) return { ok: false, error: "Preis-Check läuft noch. Gleich nochmal starten." };
     if (STATE.marketScan.running) return { ok: false, error: "EA-Live-Scan läuft noch. Gleich nochmal starten." };
+    // Kein Start waehrend einer Verkaufs-Aktion (02.10.2026). verkaufSperre
+    // sperrte bisher nur die Gegenrichtung (kein Verkauf waehrend eines
+    // Laufs) - so konnten Einstellen/Abraeumen und die Suchen des Laufs als
+    // zwei Anfrage-Stroeme gleichzeitig laufen (Komplettpruefung-23-09 Fund
+    // 23, MagicBuyer verweigert den Start genauso). "lesen" ist ausgenommen:
+    // transferlisteLesen ohne "frisch" liest nur den Speicher der App und
+    // fragt EA nie. "pruefen" (Verkaufs-Wache) sperrt bewusst mit - sie
+    // laeuft beim Laufstart ohne await und kann nach einem Stopp noch
+    // frische Lese- oder Abraeum-Anfragen offen haben.
+    if (VERKAUF.laeuft && VERKAUF.art !== "lesen") return { ok: false, error: "Eine Verkaufs-Aktion läuft noch. Gleich nochmal starten." };
     if (!SESSION.sid) {
       return { ok: false, error: "Noch nicht mit der Web App verbunden. Öffne dort einmal den Transfermarkt und starte dann erneut." };
     }
@@ -7278,6 +7908,14 @@
       // "suchweg" oben sagt, was EINGESTELLT ist - das ist nicht dasselbe.
       suchwegStat: { app: SUCHWEG_STAT.app, direkt: SUCHWEG_STAT.direkt, grund: SUCHWEG_STAT.grund },
       gedaechtnis: { karten: GEDAECHTNIS.karten, offen: GEDAECHTNIS.puffer.size },
+      // Verkaufserkennung (02.10.2026): seit dem Laden erkannt / gerade beobachtet.
+      verkaeufe: { erkannt: VERKAUF_TRACKER.erkannt, beobachtet: VERKAUF_TRACKER.beobachtet.size },
+      // Eigene Suchen des Nutzers (02.10.2026). Kein stiller Verlust: warum
+      // eine Handsuche nicht zaehlte oder keine Verkaeufe ergab.
+      handsuche: {
+        suchen: HANDSUCHE.suchen, angebote: HANDSUCHE.angebote, leer: HANDSUCHE.leer, verworfen: HANDSUCHE.verworfen,
+        ohneErkennung: HANDSUCHE.ohneErkennung, grund: HANDSUCHE.grund, at: HANDSUCHE.at
+      },
       suchseite: {
         pflicht: suchseitePflicht(), offen: suchseiteOffen(), seite: SUCHSEITE.seite, at: SUCHSEITE.at,
         rarity: SUCHSEITE.rarity, rarityName: SUCHSEITE.rarityName
@@ -8130,6 +8768,14 @@
       return;
     }
 
+    // Eigene Marktsuche des Nutzers, nur mitgelesen (02.10.2026). Die Herkunft
+    // wird nur hier geprueft, nicht fuer den ganzen Hoerer: Die uebrigen
+    // Meldungen laufen unveraendert weiter wie bisher.
+    if (data.__ownbot === "marktsuche") {
+      handsucheUebernehmen(data, event.origin);
+      return;
+    }
+
     if (data.__ownbot === "filterlisten") {
       filterListenUebernehmen(data);
       return;
@@ -8274,6 +8920,9 @@
     // Verkaufs-Wache: Standard an. Abraeumen nur, wenn ausdruecklich gewuenscht.
     STATE.verkaufWache = !(settings && settings.verkaufWache === false);
     STATE.autoAbraeumen = Boolean(settings && settings.autoAbraeumen === true);
+    // Haken "Bei EA-Warnung sofort stoppen" (02.10.2026, Optionen > Grenzen).
+    // Standard AUS (=== true): ohne Haken bleibt der FST-Modus wie bisher.
+    STATE.warnungStopp = Boolean(settings && settings.warnungStopp === true);
     // Weiterkaufen bei vollem "Nicht zugewiesen" (28.09.2026). Standard AUS -
     // das ist auch FSTs eigener Standard (scripts.js Z. 58493: die Grenze 4
     // gilt dort, solange unlimited_unassigned aus ist).
@@ -8297,8 +8946,14 @@
     if (STATE.suchweg === "app") suchseiteFragen();
     // Toene (Optionen > Toene) - wirken sofort, auch ohne Neuladen.
     tonEinstellen(settings);
+    // Auto-Scan nur neu planen, wenn er gerade EINgeschaltet wird (oder noch
+    // keiner geplant ist). Vorher plante JEDES Speichern - jeder Tastendruck in
+    // einem Grenzfeld, jeder neue Kontostand bei "Budget: Auto" - einen Scan in
+    // 3 Sekunden: unnoetige EA-Anfragen (gefunden im MagicBuyer-Vergleich, 02.10.2026).
+    const autoVorher = STATE.autoFilters;
     STATE.autoFilters = Boolean(settings && settings.autoFilters);
-    scheduleAutoScan(STATE.autoFilters ? 3000 : CONFIG.AUTO_SCAN_INTERVAL_MS);
+    if (!STATE.autoFilters) scheduleAutoScan(CONFIG.AUTO_SCAN_INTERVAL_MS); // raeumt den Zeitgeber ab
+    else if (!autoVorher || !autoScanTimer) scheduleAutoScan(3000);
   }
 
   loadCooldown().catch(() => {});

@@ -1,6 +1,9 @@
 // FC27 Own Bot – background.js (Service Worker)
 // Zeigt Chrome-Benachrichtigungen fuer Meldungen aus content.js, z. B. bei
 // einem Kauf oder wenn der Bot wegen eines Captchas stoppt.
+// Dringende Meldungen (02.10.2026, message.dringend): Ein Lauf endete wegen
+// einer EA-Warnung (content.js WARNUNG_CODES). Die bleiben stehen, bis man
+// sie wegklickt (requireInteraction), und kommen nie stumm.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || sender.id !== chrome.runtime.id) return;
   if (message.type !== "notify") return;
@@ -10,15 +13,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (s.notify === false) return;
     // Spielt der Bot selbst einen Ton (Optionen > Toene), kommt die
     // Benachrichtigung ohne Windows-Ton - sonst klingelt es doppelt.
-    const eigenerTon = (message.ton === "kauf" && s.tonKauf === true) || (message.ton === "ende" && s.tonEnde === true);
-    chrome.notifications.create({
+    // Dringend (02.10.2026): nie stumm - der Systemton ist der Rueckfall,
+    // falls Chrome den eigenen Warnton der Seite blockiert. Wer
+    // Benachrichtigungen ganz ausgeschaltet hat (oben), bekommt auch diese nicht.
+    const dringend = message.dringend === true;
+    const eigenerTon = !dringend && ((message.ton === "kauf" && s.tonKauf === true) || (message.ton === "ende" && s.tonEnde === true));
+    const meldung = {
       type: "basic",
       iconUrl: "img/icon128.png",
       title: String(message.title || "FC27 Own Bot").slice(0, 80),
       message: String(message.message || "").slice(0, 250),
       silent: eigenerTon,
-      priority: 1
-    });
+      priority: dringend ? 2 : 1
+    };
+    // Nur bei dringenden Meldungen: Sie bleibt stehen, bis man sie wegklickt.
+    // Normale Meldungen (jeder Kauf) sollen weiter von selbst verschwinden.
+    if (dringend) meldung.requireInteraction = true;
+    chrome.notifications.create(meldung);
   });
 });
 

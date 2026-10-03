@@ -2,6 +2,8 @@
 // Laeuft in der Seite (MAIN world), bevor die Web App laedt, und liest nur mit:
 // 1. X-UT-SID-Header und API-Adresse der Requests an https://*.ea.com/ut/game/...
 // 2. Die Spielerliste (player*.json), die die Web App fuer ihre Namenssuche laedt.
+// 3. Antworten auf EAs Marktsuche, wenn der Nutzer selbst sucht - nur gelesen,
+//    nie veraendert (02.10.2026).
 // Die Requests und Antworten der Web App selbst bleiben unveraendert.
 (function () {
   "use strict";
@@ -11,7 +13,7 @@
   // aeltere Fassung laeuft. Mit einem Boolean waere die neue Fassung hier
   // sofort wieder ausgestiegen und die alte haette ohne die neuen Funktionen
   // weitergemacht - genau so ist die Schnittstellen-Diagnose ins Leere gelaufen.
-  const SNIFFER_VERSION = 21; // 5: Verkaufen, 6: Usage Sharing, 7: Suchweg "app", 8: Stapel, 9: Einstellen nach dem Kauf, 10: Suchseite, 11: Muenzstand, 12: Kartenart aus der Suchmaske, 13: Auswahllisten der Suchmaske (24.09.2026), 14: Muenzstand aus {type, amount}, Abraeumen ueber removeSold, echte Fehlertexte (25.09.2026), 15: Seitenzaehler in einer Rechnung, Marktsuche am Namen erkannt, aus der Maske nur noch die Sortierung (25.09.2026), 16: Beobachtungsliste aufraeumen, Kontouebersicht mitlesen, "Nicht zugewiesen" ueber FSTs Weg (25.09.2026), 17: EA-Preisspanne aus dem Speicher, Transferliste als veraltet melden, Festpreis beim Einstellen (27.09.2026), 18: Chemie (playStyle) der eigenen Karten in der Transferliste (28.09.2026), 19: Abraeumen - gezielt FSTs Weg (_clearSold) auf Anforderung, Ergebnis "blind" (28.09.2026), 20: "Nicht zugewiesen" leeren und zuruecksetzen (28.09.2026), 21: mehrere Kartenarten aus EAs Suchmaske als Kommaliste (28.09.2026)
+  const SNIFFER_VERSION = 23; // 5: Verkaufen, 6: Usage Sharing, 7: Suchweg "app", 8: Stapel, 9: Einstellen nach dem Kauf, 10: Suchseite, 11: Muenzstand, 12: Kartenart aus der Suchmaske, 13: Auswahllisten der Suchmaske (24.09.2026), 14: Muenzstand aus {type, amount}, Abraeumen ueber removeSold, echte Fehlertexte (25.09.2026), 15: Seitenzaehler in einer Rechnung, Marktsuche am Namen erkannt, aus der Maske nur noch die Sortierung (25.09.2026), 16: Beobachtungsliste aufraeumen, Kontouebersicht mitlesen, "Nicht zugewiesen" ueber FSTs Weg (25.09.2026), 17: EA-Preisspanne aus dem Speicher, Transferliste als veraltet melden, Festpreis beim Einstellen (27.09.2026), 18: Chemie (playStyle) der eigenen Karten in der Transferliste (28.09.2026), 19: Abraeumen - gezielt FSTs Weg (_clearSold) auf Anforderung, Ergebnis "blind" (28.09.2026), 20: "Nicht zugewiesen" leeren und zuruecksetzen (28.09.2026), 21: mehrere Kartenarten aus EAs Suchmaske als Kommaliste (28.09.2026), 22: Transferliste voll nur mit geladener Stapelgroesse, tradeOwner im App-Weg (02.10.2026), 23: eigene Marktsuchen des Nutzers mitlesen (02.10.2026)
   const previous = Number(window.__fc27OwnBotSnifferLoaded);
   if (previous >= SNIFFER_VERSION) return;
   // Eine aeltere Fassung hat XMLHttpRequest und fetch bereits umgebogen. Ihre
@@ -127,6 +129,108 @@
     } catch (e) {}
   }
 
+  // --- Eigene Marktsuchen des Nutzers mitlesen (02.10.2026) ---------------
+  // Sucht der Nutzer selbst in der Web App auf dem Transfermarkt, schickt EA
+  // genau die Angebote, die der Bot sonst mit eigenen Anfragen holen muesste.
+  // Bisher verfielen sie. Jetzt gehen sie an content.js - Preis-Gedaechtnis,
+  // Markt-Verlauf (Radar) und Verkaufserkennung bekommen Daten, ohne dass
+  // eine einzige Anfrage mehr an EA geht. Gelesen wird nur die Antwort, die
+  // die App ohnehin bekommt; sie bleibt unveraendert.
+  //
+  // Nicht doppelt zaehlen: Die direkten Suchen des Bots laufen per fetch aus
+  // der isolierten Welt von content.js - die sieht dieser Haken gar nicht.
+  // Die App-Suchen des Bots (appSuche unten) laufen dagegen hier durch. Sie
+  // werden beim Oeffnen des XHR als Bot-Suche markiert und nie gemeldet.
+  //
+  // Fest "/transfermarket" wie ENDPOINT_DEFAULTS.searchPath in content.js;
+  // content.js prueft danach noch einmal gegen ENDPOINTS.searchPath. Der Pfad
+  // ist zusammen hoechstens 600 Zeichen lang - dieselbe Grenze wie dort.
+  const MARKT_RE = /^(https:\/\/[a-z0-9.-]+\.ea\.com\/ut\/game\/[a-z0-9]+)(\/transfermarket\?[^#\s]{1,584})$/i;
+  const MARKT_MAX_TEXT = 512 * 1024;
+  const MARKT_MAX_ANGEBOTE = 50;
+  // Zaehler statt Ja/Nein, mit einer Notbremse: Bleibt EAs Rueckruf aus,
+  // darf die Sperre nicht fuer immer haengen. 30 s liegen bewusst ueber
+  // CONFIG.REQUEST_TIMEOUT_MS (20 s) in content.js - kommt eine Antwort noch
+  // spaeter, hat content.js sie laengst verworfen, und als Handsuche zaehlt
+  // sie dann nur einmal.
+  const BOT_SUCHE = { offen: 0, seit: 0 };
+  const BOT_SUCHE_MAX_MS = 30000;
+
+  function botSucheLaeuft() {
+    return BOT_SUCHE.offen > 0 && Date.now() - BOT_SUCHE.seit < BOT_SUCHE_MAX_MS;
+  }
+
+  // Gibt eine fertig-Funktion zurueck, die nur beim ersten Aufruf wirkt -
+  // auch wenn EA seinen Rueckruf mehrfach ausloest.
+  function botSucheBeginn() {
+    BOT_SUCHE.offen += 1;
+    BOT_SUCHE.seit = Date.now();
+    let erledigt = false;
+    return () => {
+      if (erledigt) return;
+      erledigt = true;
+      BOT_SUCHE.offen = Math.max(0, BOT_SUCHE.offen - 1);
+    };
+  }
+
+  // Ein neues Objekt nur aus Zahlen und kurzen Texten. Alles andere aus EAs
+  // Antwort (Verkaeufername, Vertraege, Funktionen ...) bleibt hier.
+  function marktAngebot(a) {
+    const zahl = (wert, min, max) => {
+      const n = typeof wert === "number" ? wert : NaN;
+      return Number.isFinite(n) && n >= min && n <= max ? Math.floor(n) : null;
+    };
+    const text = (wert) => (typeof wert === "string" ? wert.slice(0, 16) : "");
+    const roh = lies(() => a.tradeId);
+    const tradeId = typeof roh === "number" || typeof roh === "string" ? String(roh) : "";
+    const item = lies(() => a.itemData);
+    if (!/^\d{1,20}$/.test(tradeId) || !item || typeof item !== "object") return null;
+    const id = lies(() => item.id);
+    const itemId = typeof id === "number" || typeof id === "string" ? String(id) : "";
+    const itemData = {
+      id: /^\d{1,20}$/.test(itemId) ? itemId : "",
+      assetId: zahl(lies(() => item.assetId), 0, 1e9) || 0,
+      resourceId: zahl(lies(() => item.resourceId), 0, 4e9) || 0,
+      rating: zahl(lies(() => item.rating), 0, 99) || 0,
+      itemType: text(lies(() => item.itemType))
+    };
+    // rareflag nur, wenn EA eine echte Zahl schickt - sonst WEGLASSEN. Eine 0
+    // ist bei EA die gewoehnliche Karte ("Common"); ein fehlendes Feld als 0
+    // weiterzugeben, wuerde jede Karte ohne Angabe falsch verbuchen.
+    const art = zahl(lies(() => item.rareflag), 0, 10000);
+    if (art !== null) itemData.rareflag = art;
+    const ablauf = zahl(lies(() => a.expires), -1, 345600);
+    return {
+      tradeId,
+      buyNowPrice: zahl(lies(() => a.buyNowPrice), 0, 15000000) || 0,
+      startingBid: zahl(lies(() => a.startingBid), 0, 15000000) || 0,
+      currentBid: zahl(lies(() => a.currentBid), 0, 15000000) || 0,
+      expires: ablauf === null ? 0 : ablauf,
+      tradeState: text(lies(() => a.tradeState)),
+      bidState: text(lies(() => a.bidState)),
+      itemData
+    };
+  }
+
+  // Die Antwort der App wird nur gelesen, nie veraendert. Text wird erst nach
+  // der Groessenpruefung zerlegt.
+  function noteMarktsuche(url, raw) {
+    try {
+      const treffer = MARKT_RE.exec(url);
+      if (!treffer) return;
+      if (typeof raw === "string" && raw.length > MARKT_MAX_TEXT) return;
+      const daten = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const liste = lies(() => daten.auctionInfo);
+      if (!Array.isArray(liste)) return;
+      const auctionInfo = [];
+      for (const a of liste.slice(0, MARKT_MAX_ANGEBOTE)) {
+        const angebot = marktAngebot(a);
+        if (angebot) auctionInfo.push(angebot);
+      }
+      post({ __ownbot: "marktsuche", base: treffer[1], pfad: treffer[2], auctionInfo });
+    } catch (e) {}
+  }
+
   function onXhrLoad() {
     try {
       if (this.status !== 200) return;
@@ -138,6 +242,16 @@
         else if (this.responseType === "" || this.responseType === "text") noteKonto(this.responseText);
         return;
       }
+      // Eigene Marktsuche des Nutzers (02.10.2026): nur GET und nur, wenn der
+      // XHR nicht beim Oeffnen als App-Suche des Bots markiert wurde. Bei
+      // "json" wird responseText nie angefasst - das wuerde werfen.
+      if (MARKT_RE.test(url)) {
+        if (this.__ownbotBot === true) return;
+        if (String(this.__ownbotMethod || "").toUpperCase() !== "GET") return;
+        if (this.responseType === "json") noteMarktsuche(url, this.response);
+        else if (this.responseType === "" || this.responseType === "text") noteMarktsuche(url, this.responseText);
+        return;
+      }
       if (!PLAYERS_RE.test(url)) return;
       if (this.responseType === "json") notePlayers(url, this.response);
       else if (this.responseType === "" || this.responseType === "text") notePlayers(url, this.responseText);
@@ -147,6 +261,14 @@
   if (!alreadyHooked) {
     XMLHttpRequest.prototype.open = function (method, url) {
       this.__ownbotUrl = url;
+      // Markiert wird beim Oeffnen, nicht beim Laden (02.10.2026): Ob EA
+      // seinen Rueckruf vor oder nach unserem load-Hoerer aufruft, ist
+      // unbekannt. Das Oeffnen liegt dagegen sicher zwischen botSucheBeginn
+      // und dem Rueckruf. Jedes open setzt beide Werte neu, auch bei einem
+      // wiederverwendeten XHR. Die Methode wird erst in onXhrLoad (mit
+      // try/catch) umgewandelt - hier darf nichts werfen.
+      this.__ownbotMethod = method;
+      this.__ownbotBot = botSucheLaeuft();
       if (!this.__ownbotHooked) {
         this.__ownbotHooked = true;
         this.addEventListener("load", onXhrLoad);
@@ -163,10 +285,18 @@
 
     window.fetch = function (input, init) {
       let url = "";
+      // Eigene Marktsuchen auch ueber fetch, falls EA einmal umstellt
+      // (02.10.2026). Wie beim XHR wird VOR der Anfrage festgehalten, ob
+      // gerade eine App-Suche des Bots laeuft.
+      const eigen = botSucheLaeuft();
+      let methode = "";
       try {
         url = absolute(typeof input === "string" ? input : input && input.url ? input.url : input);
         const source = init && init.headers ? init.headers : input instanceof Request ? input.headers : undefined;
         noteSession(url, new Headers(source).get("X-UT-SID"));
+      } catch (e) {}
+      try {
+        methode = String((init && init.method) || (input instanceof Request ? input.method : "") || "GET").toUpperCase();
       } catch (e) {}
 
       const result = pageFetch.apply(this, arguments);
@@ -175,6 +305,18 @@
           (res) => {
             try {
               if (res && res.ok) res.clone().text().then((text) => notePlayers(url, text), () => {});
+            } catch (e) {}
+          },
+          () => {}
+        );
+      }
+      // Wie bei der Spielerliste: unser then haengt vor der Rueckgabe, das
+      // clone passiert also, bevor die App den Inhalt liest.
+      if (!eigen && methode === "GET" && MARKT_RE.test(url) && result && typeof result.then === "function") {
+        result.then(
+          (res) => {
+            try {
+              if (res && res.status === 200) res.clone().text().then((text) => noteMarktsuche(url, text), () => {});
             } catch (e) {}
           },
           () => {}
@@ -1018,6 +1160,9 @@
       expires: Number(a.expires) || 0,
       tradeState: String(a.tradeState || ""),
       bidState: String(a.bidState || ""),
+      // Eigenes Angebot (02.10.2026): Feld wie in EAs Suchantwort und bei
+      // MagicBuyer. content.js kauft und bietet darauf nie.
+      tradeOwner: a.tradeOwner === true,
       itemData: {
         id: item.id == null ? "" : String(item.id),
         assetId: Number(lies(() => item.databaseId)) || (Number(item.definitionId) % 16777216) || 0,
@@ -1092,6 +1237,7 @@
     const Kriterien = (treffer && lies(() => treffer.kriterien.constructor)) || window.UTSearchCriteriaDTO;
     if (!dienst || typeof dienst.searchTransferMarket !== "function" || typeof Kriterien !== "function") return fail("kein Dienst");
     let observable;
+    let botSucheFertig = () => {};
     try {
       const kriterien = new Kriterien();
       // Felder der offenen Suchseite uebernehmen - nur lesen, nie schreiben.
@@ -1144,13 +1290,23 @@
       // Die App merkt sich Suchergebnisse. Ohne Leeren kaeme bei gleicher
       // Suche die alte Liste zurueck - ohne dass EA gefragt wurde.
       if (typeof dienst.clearTransferMarketCache === "function") lies(() => dienst.clearTransferMarketCache());
+      // Die eigene Suche darf nicht als Handsuche des Nutzers zurueckkommen
+      // (02.10.2026): Bis EAs Rueckruf da ist, gilt jeder neu geoeffnete
+      // Marktsuch-XHR als Bot-Suche. Auf jedem Weg hinaus wird wieder
+      // freigegeben, sonst gingen danach echte Handsuchen verloren.
+      botSucheFertig = botSucheBeginn();
       observable = dienst.searchTransferMarket(kriterien, seite);
     } catch (e) {
+      botSucheFertig();
       return fail("Aufruf fehlgeschlagen: " + kurz(e));
     }
-    if (!observable || typeof observable.observe !== "function") return fail("unerwartete Antwort");
+    if (!observable || typeof observable.observe !== "function") {
+      botSucheFertig();
+      return fail("unerwartete Antwort");
+    }
     try {
       observable.observe({}, function (sender, response) {
+        botSucheFertig();
         const items = lies(() => (response.data || response.response || {}).items) || [];
         APP_ANGEBOTE.clear();
         const auktionen = [];
@@ -1163,6 +1319,7 @@
         appAntwort(requestId, response, { auctionInfo: auktionen, suchseite: Boolean(treffer), seite: treffer ? treffer.seite : "" });
       });
     } catch (e) {
+      botSucheFertig();
       fail("Beobachten fehlgeschlagen: " + kurz(e));
     }
   }
@@ -1224,10 +1381,21 @@
     //
     // Kein stiller Verlust: Fehlt isPileFull oder ItemPile, bleibt der Wert
     // null. Im Bot gilt dann weiter die eigene Zaehlung, genau wie bisher.
+    // Seit 02.10.2026 ebenso, solange die Stapelgroesse noch nicht geladen
+    // ist (getPileSize 0 oder fehlt) - siehe unten.
     const vollFrage = (stapelName) => {
       if (!repo || typeof repo.isPileFull !== "function") return null;
       const stapel = lies(() => window.ItemPile[stapelName]);
       if (stapel === undefined || stapel === null) return null;
+      // Stapelgroesse zuerst (02.10.2026): EAs isPileFull meldet "voll",
+      // solange die Groesse des Stapels noch nicht geladen ist (Fund aus
+      // MagicBuyer, core/market.js). Sonst lehnte der Bot direkt nach dem
+      // Laden der Web App den Start ab oder stoppte den Lauf mit
+      // "Transferliste voll (3)". null heisst: Es gilt die eigene Zaehlung.
+      // Ohne getPileSize ist nicht feststellbar, ob die Groesse schon da ist -
+      // dann ebenfalls null. Liest nur den Speicher der App, keine Anfrage.
+      const groesse = Number(lies(() => (typeof repo.getPileSize === "function" ? repo.getPileSize(stapel) : 0)));
+      if (!(groesse > 0)) return null;
       const wert = lies(() => repo.isPileFull(stapel));
       return typeof wert === "boolean" ? wert : null;
     };

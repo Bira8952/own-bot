@@ -34,7 +34,8 @@ const $ = (id) => WURZEL.getElementById(id);
 const NUMBER_FIELDS = ["rating", "rarity", "maxPrice", "budget", "maxBuys", "discount", "minProfit", "timeLimitMin", "bidSeconds", "filterSearchLimit", "filterAnfrageLimit", "filterBuyLimit", "filterSpendLimit", "tonLautstaerke", "rotKaeufeProFilter", "rotSuchenProFilter", "rotPauseS", "grenzeSuchStunde", "grenzeSuchTag", "listFestpreis", "rotWertungMin", "rotWertungMax", "rotMinPreis", "preisStufen", "rotAnfrageProFilter"];
 // 27.09.2026: verkaufPreisLangeNutzen kommt dazu - damit der Bot nach 60
 // Minuten Laufzeit weiter einstellt (siehe Optionen > Verkaeufe).
-const CHECK_FIELDS = ["notify", "autoFilters", "smartProfit", "bidSniping", "stopIfTooBroad", "sofortKaufen", "nachKaufNeuSuchen", "gewinnBremse", "rotAbzUngeprueft", "rotAbzNurGesehen", "rotAbzUnterSchnitt", "rotAbzGewinn", "rotAbzUnterPreis", "rotAbzHeiss", "rotAbzRuhig", "rotAbzNeu", "rotAbzChem", "autoCheckOnStart", "appSuchweg", "appNurSuchseite", "tonKauf", "tonEnde", "verkaufWache", "autoAbraeumen", "verkaufPreisLangeNutzen", "nichtZugewiesenUnbegrenzt", "rotationModus", "deckelFst", "fstModus"];
+// 02.10.2026: warnungStopp ("Bei EA-Warnung sofort stoppen", Optionen > Grenzen).
+const CHECK_FIELDS = ["notify", "autoFilters", "smartProfit", "bidSniping", "stopIfTooBroad", "sofortKaufen", "nachKaufNeuSuchen", "gewinnBremse", "rotAbzUngeprueft", "rotAbzNurGesehen", "rotAbzUnterSchnitt", "rotAbzGewinn", "rotAbzUnterPreis", "rotAbzHeiss", "rotAbzRuhig", "rotAbzNeu", "rotAbzChem", "autoCheckOnStart", "appSuchweg", "appNurSuchseite", "tonKauf", "tonEnde", "verkaufWache", "autoAbraeumen", "verkaufPreisLangeNutzen", "nichtZugewiesenUnbegrenzt", "rotationModus", "deckelFst", "fstModus", "warnungStopp"];
 const AFTER_BUY_VALUES = ["transfer", "club", "keep", "list"];
 
 function afterBuyValue() {
@@ -49,6 +50,8 @@ function setAfterBuy(wert) {
 // Die Eingrenzungen des Markt-Scans werden mitgespeichert - sonst waeren
 // sie nach jedem Neuladen der Seite wieder weg.
 const SELECT_FIELDS = ["speedMode", "pausePreset", "preisMethode", "rarity-wahl", "rotQuelle",
+  // profitSortMode (02.10.2026): Filterliste nach echtem Gewinn je Suche ("auto") oder Wertung ("manual").
+  "profitSortMode",
   // rotAbzModus (28.09.2026): sperren = wie bisher, nur = FSTs include.
   "rotAbzModus",
   "scanf-rarity", "scanf-level", "scanf-position", "scanf-league", "scanf-nation", "scanf-playStyle", "scanf-club"];
@@ -74,6 +77,7 @@ const DEFAULTS = {
   // Woher die Rotation ihre Filter nimmt (28.09.2026). "live" ist der
   // bisherige Weg - der Standard aendert also fuer niemanden etwas.
   rotQuelle: "live",
+  profitSortMode: "auto",
   // 27.09.2026: Die Auswahl fuer die Rotation. 0 bis 10 und ALLE Haken
   // gesetzt heisst: Es wird nichts aussortiert. Die Mindestwertung darf auf
   // keinen Fall hoeher starten - am 23.09. fand die Rotation mit einer
@@ -104,6 +108,9 @@ const DEFAULTS = {
   // bekommen ihn ueber den Merker fstModusV1 (siehe loadSettings) - ein neuer
   // Standardwert erreicht sie sonst nie. Aus = der strenge Modus von frueher.
   fstModus: true,
+  // Bei EA-Warnung sofort stoppen (02.10.2026): ab Werk AUS. Ein Merker wie
+  // fstModusV1 ist nicht noetig - fehlt das Feld, ergibt {...DEFAULTS} false.
+  warnungStopp: false,
   // Versuche je Filter in der Rotation (FST: Transaktionen je Filter, 10).
   rotAnfrageProFilter: "10"
 };
@@ -244,6 +251,40 @@ let selectedFilterKey = null;
 let modalFilterRow = null;
 let modalSaleMode = "normal";
 let modalProfitMode = "auto";
+// 02.10.2026: Chancen, Assistent, Einfach/Profi, Einfuehrung (siehe unten,
+// Abschnitt "Chancen, Assistent ..."). Hier oben, damit render() sie auch
+// beim allerersten Aufruf schon kennt.
+const MARKT = typeof FC27Markt === "object" && FC27Markt ? FC27Markt : null;
+const ASSISTENT = typeof FC27Assistent === "object" && FC27Assistent ? FC27Assistent : null;
+const CHANCEN_MAX = 10;
+const CHANCEN_NEU_MS = 60000; // die Rangliste haengt an der Uhr (Frische) - einmal pro Minute reicht
+const SVG_NS = "http://www.w3.org/2000/svg";
+let marktVerlauf = {};
+let marktVerkaeufe = {}; // erkannte Verkaeufe aus content.js: { key: [[t, preis], ...] }
+let radarListe = "chancen"; // offene Rangliste im Radar
+let radarDaten = { bestseller: [], guenstig: [], steigend: [], fallend: [] };
+// Trefferquote der Dip-Signale im gespeicherten Verlauf (markt.js backtestAlle).
+let trefferStand = { gesamt: { signale: 0, treffer: 0, offen: 0, quote: 0, dauerMin: 0 }, jeKarte: {} };
+// Ein Satz je Rangliste (Radar).
+const RADAR_ERKLAERUNG = {
+  chancen: "Unter ihrem üblichen Preis und vermutlich bald wieder teurer – mit Gewinn nach 5 % Gebühr.",
+  bestseller: "Am meisten verkauft in den letzten 3 Stunden – erkannt an Angeboten, die vor ihrem Ablauf verschwunden sind.",
+  guenstig: "Gerade am weitesten unter ihrem üblichen Preis.",
+  steigend: "In der letzten Stunde am stärksten gestiegen.",
+  fallend: "In der letzten Stunde am stärksten gefallen – kaufen erst, wenn der Fall aufhört."
+};
+let chancen = [];
+let chancenAt = 0;
+let chancenStand = { karten: 0, reif: 0, fortschritt: 0 };
+let chancenKey = "";
+let assistentKey = "";
+let spielerIndex = null;
+let spielerIndexQuelle = null;
+let ansicht = "profi";
+// Knoepfe des Assistenten, die nur einen Reiter oeffnen.
+const ASSISTENT_REITER = { chancen: "tab-chancen", snipen: "tab-snipe", kaeufe: "tab-buys" };
+let tourSeite = 1;
+const TOUR_SEITEN = 3;
 
 // ---------------------------------------------------------------------------
 // Formatierung
@@ -404,6 +445,35 @@ function umStufenVerschieben(preis, stufen) {
   return wert;
 }
 
+// Startgebot und Sofortkauf beim Einstellen (02.10.2026). Wortgleich mit
+// content.js einstellPreise - ein Test haelt beide gleich (Wortlaut und ein
+// Raster). Der Knopf im Verkaufs-Helfer muss genau den Preis zeigen, den der
+// Motor danach auch einstellt. Begruendung der Regeln steht in content.js.
+function einstellPreise(wunsch, eaMin, eaMax) {
+  const min = Math.max(0, Math.floor(Number(eaMin) || 0));
+  const max = Math.max(0, Math.floor(Number(eaMax) || 0));
+  let sofort = roundDownToStep(Math.max(0, Math.floor(Number(wunsch) || 0)));
+  let grenze = "";
+  if (max && sofort > max) {
+    sofort = roundDownToStep(max);
+    grenze = "max";
+  }
+  // Kleinster Leiterpreis ab eaMin. EA schickt eaMin heute immer auf der
+  // Leiter - liegt es einmal daneben, zaehlt die naechste Stufe darueber.
+  let minLeiter = roundDownToStep(min);
+  if (minLeiter < min) minLeiter = roundDownToStep(minLeiter + stepFor(minLeiter));
+  const sofortMin = minLeiter ? roundDownToStep(minLeiter + stepFor(minLeiter)) : 0;
+  if (sofortMin && sofort < sofortMin) {
+    sofort = sofortMin;
+    grenze = "min";
+  }
+  if (max && sofort > max) return { sofort: 0, start: 0, grenze, fehler: "spanne" };
+  let start = roundDownToStep(sofort - 1);
+  if (minLeiter && start < minLeiter) start = minLeiter;
+  if (!(start > 0) || start >= sofort) return { sofort, start: 0, grenze, fehler: "start" };
+  return { sofort, start, grenze, fehler: "" };
+}
+
 // ohneFstDeckel (28.09.2026): true heisst "den Haken Preisdeckel wie FST
 // ignorieren". Gebraucht vom KAUFPREIS (suggestionFor): Der Haken soll nur
 // beeinflussen, zu welchem Preis eine gekaufte Karte eingestellt wird - nie,
@@ -503,6 +573,10 @@ function verkaufsPreisText(vp) {
   const kopf = "Preis nach Alter (" + (PREIS_METHODE_TEXT[vp.methode] || "Empfohlen") + "): ";
   if (vp.grund === "keineDaten") {
     return "Preis nach Alter: Diese Messung kennt das Alter der Angebote noch nicht. Nach dem nächsten Preis-Check rechnet der Bot damit.";
+  }
+  // Unbestaetigter Preissprung nach oben (02.10.2026, siehe suggestionFor).
+  if (vp.grund === "sprung") {
+    return "Preis nach Alter: Wegen eines unbestätigten Preissprungs rechnet der Bot zum Kaufen mit dem vorigen, kleineren Marktpreis – bitte nachmessen.";
   }
   if (vp.grund === "wenig") {
     return "Preis nach Alter: Nur " + vp.mitAlter + " von " + vp.n + " Angeboten haben eine bekannte Restzeit – zu wenig. Der Bot rechnet mit dem Marktpreis.";
@@ -940,6 +1014,30 @@ function mindestKaufpreis(entry) {
 
 // Vorschlag: eigener Abschlag unter dem Marktpreis, gueltige Preisstufe, EA-Spanne.
 function suggestionFor(entry) {
+  // Preissprung (02.10.2026, content.js savePriceEntry): Ist der Preis seit
+  // dem letzten Check um mehr als 35 % GESTIEGEN und noch unbestaetigt,
+  // zaehlt zum Kaufen der kleinere Vorschlag. Das ganze Objekt (Kauf,
+  // saleNet, Gewinn) kommt aus EINER Rechnung, damit die Anzeige stimmig
+  // bleibt. Bei einem Sprung nach unten ist der neue Preis schon der
+  // kleinere - dann bleibt alles wie bisher. Kein automatischer Preis-Check.
+  const sv = entry && entry.preisSprung && Number(entry.preisSprung.vorher) > 0 ? Number(entry.preisSprung.vorher) : 0;
+  if (sv > 0 && sv < (Number(entry.market) || 0)) {
+    const neu = suggestionFor(Object.assign({}, entry, { preisSprung: null }));
+    // Das Alter gehoert nur zur neuen Messung - fuer den alten Preis gibt es
+    // keins (verkaufsPreis wuerde es ueber alter.markt ohnehin verwerfen).
+    const alt = suggestionFor(Object.assign({}, entry, { market: sv, alter: null, preisSprung: null }));
+    if (alt.value < neu.value) {
+      return Object.assign({}, alt, {
+        preisSprung: entry.preisSprung,
+        verkauf: Object.assign({}, alt.verkauf, { grund: "sprung" }),
+        note: [alt.note, "Preissprung: Zum Kaufen rechnet der Bot mit dem kleineren, vorigen Marktpreis (" + fmt(sv) + ") – bitte nachmessen."].filter(Boolean).join(" ")
+      });
+    }
+    return Object.assign({}, neu, {
+      preisSprung: entry.preisSprung,
+      note: [neu.note, "Preissprung unbestätigt – bitte nachmessen."].filter(Boolean).join(" ")
+    });
+  }
   // Verkaufspreis = Marktpreis, oder etwas weniger, wenn Angebote lange
   // unverkauft stehen (F1). Zielpreis, Gewinn und Wertung folgen von selbst.
   // Der Kaufpreis haengt NICHT am Haken "Preisdeckel wie FST" (28.09.2026) -
@@ -1080,7 +1178,7 @@ function renderPricePanel() {
   // Preis nach Alter: erklaeren, warum der Bot vielleicht tiefer rechnet (F1).
   if ($("p-alter")) {
     $("p-alter").textContent = verkaufsPreisText(suggestion.verkauf);
-    $("p-alter").className = "hint" + (suggestion.verkauf.grund === "gedeckelt" || suggestion.verkauf.grund === "wenig"
+    $("p-alter").className = "hint" + (suggestion.verkauf.grund === "gedeckelt" || suggestion.verkauf.grund === "wenig" || suggestion.verkauf.grund === "sprung"
       ? " warn"
       : suggestion.verkauf.quelle === "alter" ? " ok" : "");
   }
@@ -1138,6 +1236,11 @@ function renderPricePanel() {
   // Rechnung ein - er darf nur warnen, wenn unsere Messung weit danebenliegt.
   if (latest.schnittWarnung && latest.eaSchnitt > 0) {
     hints.push("EA nennt selbst einen Marktschnitt von " + fmt(latest.eaSchnitt) + " Coins – das liegt weit neben unserer Messung. Bitte noch einmal messen, bevor du danach kaufst.");
+  }
+  // Unbestaetigter Preissprung (02.10.2026, content.js savePriceEntry). Nur
+  // ein Hinweis - nachgemessen wird nie automatisch, das kostet Suchen.
+  if (latest.preisSprung && Number(latest.preisSprung.vorher) > 0) {
+    hints.push("Preissprung: Der vorige Preis-Check lag bei " + fmt(latest.preisSprung.vorher) + " Coins, jetzt " + fmt(latest.market) + ". Zum Kaufen gilt der kleinere, zum Verkaufen der größere Preis – bitte nachmessen.");
   }
   const abstand = abstandWarnung(suggestion.value, latest.lowest);
   if (abstand) hints.push(abstand);
@@ -1339,21 +1442,25 @@ function localFilterStats(key, entry) {
   const laeufe = alle.length;
   if (scans > 0) {
     return {
-      scans, hits, bought,
+      scans, hits, bought, missed,
       hitRate: Math.min(100, hits / scans * 100),
+      // Kaufquote (02.10.2026): nur wirkliche Kaeufe je Suche. Verpasste
+      // Angebote bringen keine Coins und duerfen den Profit nicht aufblasen.
+      buyRate: Math.min(100, bought / scans * 100),
       successRate: hits > 0 ? Math.min(100, bought / hits * 100) : 0,
       estimated: false,
       laeufe
     };
   }
   if (gemesseneAktivitaet(entry) === "unbekannt") {
-    return { scans: 0, hits: 0, bought: 0, hitRate: 0, successRate: 0, estimated: true, keineDaten: true, laeufe };
+    return { scans: 0, hits: 0, bought: 0, missed: 0, hitRate: 0, buyRate: 0, successRate: 0, estimated: true, keineDaten: true, laeufe };
   }
   const sample = Math.max(1, Number(entry.sampleSize) || 1);
   const disappeared = Math.max(0, Number(entry.disappeared) || 0);
   return {
-    scans: 0, hits: disappeared, bought: 0,
+    scans: 0, hits: disappeared, bought: 0, missed: 0,
     hitRate: Math.min(100, disappeared / sample * 100),
+    buyRate: 0,
     successRate: 0,
     estimated: true,
     keineDaten: false,
@@ -1559,24 +1666,88 @@ function prozentAufgerundet(anteil) {
 // nachzieht, aendert dann leicht nur eine davon - und zwei Anzeigen, die
 // dasselbe meinen, zeigen verschiedene Zahlen. Genau so lief beim
 // Verkaufspreis der Bildschirm gegen den Bot.
+// "Konto-schonend" (02.10.2026): content.js wuerfelt im Mittel 10,6 s, die
+// 10-s-Untergrenze ab Suchbeginn (suchWarteMs) hebt das um rund 0,1 s.
 function tempoSekunden(tempo) {
-  return tempo === "safe" ? 4.6 : tempo === "turbo" ? 3.0 : 3.9;
+  return tempo === "schonend" ? 10.7 : tempo === "safe" ? 4.6 : tempo === "turbo" ? 3.0 : 3.9;
 }
 
 function tempoName(tempo) {
-  return tempo === "safe" ? "Langsam" : tempo === "turbo" ? "Turbo" : "Normal";
+  return tempo === "schonend" ? "Konto-schonend" : tempo === "safe" ? "Langsam" : tempo === "turbo" ? "Turbo" : "Normal";
 }
 
 function gewinnProStunde(stats, suggestion, usage) {
   if (!stats || stats.estimated) return null;
   const gewinn = Number(suggestion && suggestion.expectedProfit) || 0;
-  const rate = Number(stats.hitRate) || 0;
+  // Kaufquote statt Trefferquote (02.10.2026): Ein verpasstes Angebot bringt
+  // nichts. Mit der Trefferquote war die Zahl um Treffer/Kaeufe zu hoch.
+  const rate = Number(stats.buyRate) || 0;
   if (!(gewinn > 0) || !(rate > 0)) return null;
   const tempo = $("speedMode") ? $("speedMode").value : "normal";
   const sek = tempoSekunden(tempo);
   const ausTempo = Math.floor(3600 / sek);
   const limit = Number(usage && usage.searchLimitHour) || 150;
   return Math.round(Math.min(ausTempo, limit) * (rate / 100) * gewinn);
+}
+
+// ---------------------------------------------------------------------------
+// Sortierung nach echtem Gewinn (02.10.2026)
+//
+// Eine hohe Wertung ist eine Schaetzung. Was zaehlt, sind Coins je Suche:
+// Kaeufe je Suche mal Gewinn je Kauf. Ab zwei echten Verkaeufen gilt der
+// echte Durchschnittsgewinn, sonst der geschaetzte. Ungetestete Filter
+// stehen vor gemessenen Filtern, die nie gekauft haben - sie verdienen eine
+// Chance, die anderen haben ihre gehabt.
+// ---------------------------------------------------------------------------
+
+// Echter Gewinn eines Filters: Kauf (purchases) und Verkauf (verkaeufe) ueber
+// die Karten-ID verbunden. Aeltere Kaeufe ohne Schluessel zaehlen nur fuer
+// Schluessel ohne Kartenart (Spieler:Rating).
+function realProfitStats(key) {
+  const kaeufe = new Map();
+  for (const k of purchases) {
+    if (!k || !k.itemId) continue;
+    const kKey = k.key || (k.playerId + ":" + (k.rating || 0));
+    if (kKey === key) kaeufe.set(String(k.itemId), k);
+  }
+  let sold = 0;
+  let summe = 0;
+  let wins = 0;
+  let losses = 0;
+  for (const v of verkaeufe) {
+    const kauf = v && v.itemId ? kaeufe.get(String(v.itemId)) : null;
+    if (!kauf || !(Number(v.preis) > 0)) continue;
+    const gewinn = Math.round(Number(v.preis) * (1 - SALE_FEE) - (Number(kauf.price) || 0));
+    sold += 1;
+    summe += gewinn;
+    if (gewinn > 0) wins += 1;
+    else if (gewinn < 0) losses += 1;
+  }
+  return { sold, avgProfit: sold ? Math.round(summe / sold) : 0, wins, losses };
+}
+
+// Coins je Suche, oder null fuer "noch nicht gemessen".
+function profitJeSuche(row) {
+  const st = row.stats || {};
+  if (st.estimated || !(st.scans > 0)) return null;
+  const echt = row.real && row.real.sold >= 2;
+  const gewinn = echt ? row.real.avgProfit : Number(row.suggestion && row.suggestion.expectedProfit) || 0;
+  return (Number(st.bought) || 0) / st.scans * gewinn;
+}
+
+function profitZeilenVergleich(a, b) {
+  const pa = profitJeSuche(a);
+  const pb = profitJeSuche(b);
+  const gruppe = (p) => (p === null ? 1 : p > 0 ? 0 : 2); // gemessen mit Gewinn, ungetestet, gemessen ohne Gewinn
+  return gruppe(pa) - gruppe(pb) || (pb || 0) - (pa || 0) || b.score - a.score;
+}
+
+function filterZeilenVergleich(a, b) {
+  const feld = $("profitSortMode");
+  if (feld && feld.value === "manual") {
+    return b.score - a.score || (Number(b.suggestion && b.suggestion.expectedProfit) || 0) - (Number(a.suggestion && a.suggestion.expectedProfit) || 0);
+  }
+  return profitZeilenVergleich(a, b);
 }
 
 function wertungText(score, teile) {
@@ -1828,6 +1999,7 @@ function liveFilterRows(alleGruppen) {
       score: Math.max(0, roh - abkuehlAbzug(roh, kuehl)),
       budget: budgetGroup(suggestion.value)
     });
+    rows[rows.length - 1].real = realProfitStats(rows[rows.length - 1].key);
   }
   // Dazu die Karten, die laut Preis-Gedaechtnis gerade unter ihrem
   // ueblichen Preis liegen. Sie kosten keine Anfrage und stehen nur da,
@@ -1857,10 +2029,12 @@ function liveFilterRows(alleGruppen) {
       score: Math.max(0, roh - abkuehlAbzug(roh, kuehl)),
       budget: budgetGroup(suggestion.value)
     });
+    rows[rows.length - 1].real = realProfitStats(rows[rows.length - 1].key);
   }
   // FST wirft nie eine Zeile weg - die Budget-Gruppe blendet nur aus
   // (v-show, Z. 35698-35705). Und es wird NICHT abgeschnitten.
-  rows.sort((a, b) => b.score - a.score || b.suggestion.expectedProfit - a.suggestion.expectedProfit);
+  // 02.10.2026: nach echtem Gewinn je Suche (Auto) oder wie bisher nach Wertung (Manuell).
+  rows.sort(filterZeilenVergleich);
   for (const row of rows) {
     row.sichtbar = filterBudget === "all" || row.budget === filterBudget;
     row.fuerDich = false;
@@ -2194,14 +2368,20 @@ function modalFilterValues() {
   const row = modalFilterRow;
   const entry = row.entry;
   const base = suggestionFor(entry);
-  const prices = sellingPrices(entry, null);
+  // Preissprung (02.10.2026): Rechnet base mit dem kleineren, vorigen
+  // Marktpreis (unbestaetigter Sprung nach oben), muessen auch die
+  // Verkaufsmodi Schnell/Geduldig darauf beruhen. Sonst hob shift den
+  // Kaufpreis wieder auf das Niveau des Sprungpreises. Keine Anfrage.
+  const sprungVorher = base.verkauf && base.verkauf.grund === "sprung" && base.preisSprung ? Number(base.preisSprung.vorher) || 0 : 0;
+  const preisEintrag = sprungVorher > 0 ? Object.assign({}, entry, { market: sprungVorher, alter: null, preisSprung: null }) : entry;
+  const prices = sellingPrices(preisEintrag, null);
   // Normal ist der Verkaufspreis aus suggestionFor, den auch die Karte zeigt -
   // also Marktpreis oder der Preis nach Alter (F1). Mit entry.market waere der
   // Abschlag nach Alter im Modus Normal wieder weg.
   const salePrice = modalSaleMode === "safe" ? prices.safe : modalSaleMode === "lazy" ? prices.lazy : base.verkaufspreis;
   const saleNet = Math.floor(salePrice * (1 - SALE_FEE));
   const input = Math.max(0, Number($("fm-profit-value").value) || 0);
-  const wantedProfit = modalProfitMode === "percent" ? Math.floor(salePrice * input / 100) : modalProfitMode === "coins" ? Math.floor(input) : intelligentProfit(entry);
+  const wantedProfit = modalProfitMode === "percent" ? Math.floor(salePrice * input / 100) : modalProfitMode === "coins" ? Math.floor(input) : intelligentProfit(preisEintrag);
   const shift = saleNet - base.saleNet; // Zu- oder Abschlag durch den Verkaufsmodus
   const verschoben = shift ? roundDownToStep(base.value + shift) : base.value;
   let maxPrice = Math.max(0, Math.min(verschoben, roundDownToStep(saleNet - wantedProfit)));
@@ -2213,7 +2393,7 @@ function modalFilterValues() {
   //
   // Vor den EA-Grenzen: EAs Mindestpreis ist ein harter Boden und darf
   // weiterhin anheben.
-  if (Number(entry.market) > 0) maxPrice = Math.min(maxPrice, roundDownToStep(entry.market));
+  if (Number(preisEintrag.market) > 0) maxPrice = Math.min(maxPrice, roundDownToStep(preisEintrag.market));
   if (entry.eaMin && maxPrice < entry.eaMin) maxPrice = entry.eaMin;
   if (entry.eaMax && maxPrice > entry.eaMax) maxPrice = entry.eaMax;
   return { salePrice, saleNet, wantedProfit, maxPrice, expectedProfit: maxPrice > 0 ? saleNet - maxPrice : 0 };
@@ -2828,8 +3008,10 @@ let lastTargetsKey = "";
 
 // Live-Filter gelten 15 Minuten. Danach ueberspringt der Start sie, und unter
 // "Filter" laesst sich derselbe Filter erneuern.
+// Chancen (02.10.2026) laufen ab wie Live-Filter: Ein Dip von vor einer
+// Stunde ist vorbei. Sie gelten FC27Markt.FRISCH_MS ab ihrer letzten Messung.
 function liveAlt(t) {
-  return Boolean(t) && t.source === "live" && t.expiresAt > 0 && t.expiresAt <= Date.now();
+  return Boolean(t) && (t.source === "live" || t.source === "chance") && t.expiresAt > 0 && t.expiresAt <= Date.now();
 }
 
 // Im FST-Modus gibt es keinen Ablauf (Punkt 3): FST misst jeden Filter bei jedem
@@ -2857,7 +3039,12 @@ function sanitizeTargets(list) {
       // Laden ueberleben - Number("12,70") waere NaN und machte daraus still
       // "jede Art". Das ist dieselbe Falle wie in der Sicherung vom 25.09.
       playerId: Number(t.playerId), playerName: t.playerName, rating: Number(t.rating) || 0, rarity: rarityWert(t.rarity), maxPrice: Number(t.maxPrice),
-      source: t.source === "live" ? "live" : "manual",
+      // "chance" (02.10.2026): aus der Chancen-Ansicht. Bringt wie ein
+      // Live-Filter ihren Verkaufspreis mit (salePrice = Ziel, preisAt =
+      // Zeitpunkt der Messung) - der Verkauf rechnet mit der Erholung des
+      // Preises, nicht mit dem gefallenen Preis von jetzt.
+      source: t.source === "live" ? "live" : t.source === "chance" ? "chance" : "manual",
+      preisAt: t.source === "chance" && Number(t.preisAt) > 0 ? Number(t.preisAt) : 0,
       filterId: typeof t.filterId === "string" ? t.filterId : "",
       salePrice: Number(t.salePrice) || 0,
       // Fester Verkaufspreis je Zeile (28.09.2026, wie FSTs listBuyNowPrice
@@ -2958,7 +3145,8 @@ function laufzeitRechnung(st) {
     const pvF = $("pausePreset") ? $("pausePreset").value : "fst";
     // FST: alle 25-46 Suchen 21-39 s, jede 2.-4. Pause 63-117 s: im Mittel
     // rund 50 s je Pause bei 35 Suchen. Die anderen Stufen wie in content.js.
-    const pAlleF = pvF === "off" ? 0 : pvF === "fst" ? 35 : pvF === "long" ? 30 : 45;
+    // "schonend" (02.10.2026): alle 12-18 Suchen 60-120 s, im Mittel 15 und 90.
+    const pAlleF = pvF === "off" ? 0 : pvF === "fst" ? 35 : pvF === "schonend" ? 15 : pvF === "long" ? 30 : 45;
     const pSekF = pvF === "fst" ? 50 : (pvF === "long" ? 180 : pvF === "short" ? 45 : 90) * 1.425;
     const pauseJeSucheF = pAlleF > 0 ? pSekF / pAlleF : 0;
     const proStundeF = Math.max(1, Math.floor(3600 / (sekundenF + pauseJeSucheF)));
@@ -2983,13 +3171,18 @@ function laufzeitRechnung(st) {
   const tempo = $("speedMode") ? $("speedMode").value : "normal";
   const sekunden = tempoSekunden(tempo);
   const name = tempoName(tempo);
-  const minuten = Math.round((proStunde * sekunden) / 60);
+  // Gleichmaessiges Tempo (02.10.2026): content.js (gleichmaessigAbstandMs)
+  // laesst zwischen zwei Suchen mindestens 3600 s / Stundenlimit, plus 0 bis
+  // 15 Prozent Zufall nach oben - im Mittel das 1,075-fache. Bei 150 Suchen
+  // sind das rund 26 s, mehr als jedes Tempo allein.
+  const abstand = Math.max(sekunden, (3600 / proStunde) * 1.075);
+  const minuten = Math.round((proStunde * abstand) / 60);
   // Die Sicherheitspausen gehoeren in die Rechnung (27.09.2026). Sie kosten
   // keine einzige Suche, aber sie verteilen dieselben Suchen ueber mehr Zeit.
   // Ohne sie stand hier eine Zahl, die der Bot nie erreicht. Dieselben Werte
   // wie in content.js breakPlan.
   const pv = $("pausePreset") ? $("pausePreset").value : "medium";
-  const pAlle = pv === "off" ? 0 : pv === "long" ? 30 : 45;
+  const pAlle = pv === "off" ? 0 : pv === "schonend" ? 15 : pv === "long" ? 30 : 45;
   const pSek = pv === "long" ? 180 : pv === "short" ? 45 : 90;
   // Jede vierte Pause ist die lange: das 2,7-fache der normalen. So macht es
   // content.js (breakPlan), abgeschaut bei FUT Simple Trader (scripts.js
@@ -2998,7 +3191,10 @@ function laufzeitRechnung(st) {
   // Faktor war die Anzeige zu knapp: Sie nannte 5 Min. Pause, der Bot machte
   // rund 7 (28.09.2026).
   const PAUSEN_FAKTOR = 1.425;
-  const pauseJeSucheSek = pAlle > 0 ? (pSek * PAUSEN_FAKTOR) / pAlle : 0;
+  // 02.10.2026: Eine Pause ersetzt den Teil des Abstands, der nach ihr nicht
+  // mehr gewartet wird (content.js rechnet die Zeit seit Suchbeginn an). Ohne Verteilung
+  // (abstand = sekunden) ist das genau die alte Formel.
+  const pauseJeSucheSek = pAlle > 0 ? Math.max(0, pSek * PAUSEN_FAKTOR - (abstand - sekunden)) / pAlle : 0;
   const pausenMin = Math.round((proStunde * pauseJeSucheSek) / 60);
   const bruttoMin = minuten + pausenMin;
   // Ein leeres Feld heisst "kein Zeitlimit" - content.js setzt dann 300 Min.
@@ -3018,7 +3214,10 @@ function laufzeitRechnung(st) {
     // Eine Suche samt ihrem Anteil an den Pausen, in Sekunden. Fuer die
     // Start-Schaetzung - damit dort nicht noch einmal gerechnet wird
     // (28.09.2026).
-    sekundenBrutto: sekunden + pauseJeSucheSek
+    sekundenBrutto: abstand + pauseJeSucheSek,
+    // Abstand zwischen zwei Suchbeginnen ohne Pausen (02.10.2026). Groesser
+    // als sekunden heisst: Der Bot verteilt die Suchen ueber die Stunde.
+    abstand
   };
 }
 
@@ -3055,8 +3254,13 @@ function renderLaufzeit(st) {
     text = r.laufzeit >= 300
       ? "Ohne Zeitlimit \u00b7 der Bot l\u00e4uft, bis das Tagesbudget oder die Filter zu Ende sind"
       : r.laufzeit + " Minuten \u00b7 kurze L\u00e4ufe fallen weniger auf";
-    el.title = "Die " + r.proStunde + " Suchen dieser Stunde reichen bei Tempo \u201e" + r.name +
-      "\u201c f\u00fcr rund " + r.bruttoMin + " Minuten \u2013 das deckt die eingestellte Laufzeit ab.";
+    // Gleichmaessiges Tempo (02.10.2026): Im strengen Modus wird die Stunde
+    // nicht mehr verbraucht, sondern verteilt. Im FST-Modus fehlt r.abstand.
+    el.title = r.abstand > r.sekunden
+      ? "Der Bot verteilt die " + r.proStunde + " Suchen der Stunde gleichm\u00e4\u00dfig: rund alle " +
+        Math.round(r.abstand) + " Sekunden eine. So ist die Stunde nicht nach wenigen Minuten verbraucht, und es gibt keine lange Wartepause."
+      : "Die " + r.proStunde + " Suchen dieser Stunde reichen bei Tempo \u201e" + r.name +
+        "\u201c f\u00fcr rund " + r.bruttoMin + " Minuten \u2013 das deckt die eingestellte Laufzeit ab.";
   }
   if (el.textContent !== text) el.textContent = text;
   el.classList.toggle("tune-auto-warn", r.endetDurchStunde);
@@ -3087,10 +3291,20 @@ function renderGrenzen(st) {
   const pausenMin = r.pausenMin;
   const bruttoMin = r.bruttoMin;
   const laufzeit = r.laufzeit;
-  teile.push("Bei Tempo „" + name + "“ (rund " + sekunden.toLocaleString("de-DE") + " Sek. je Suche) sind " +
-    proStunde + " Suchen nach etwa " + bruttoMin + " Minuten aufgebraucht" +
-    (pausenMin > 0 ? " (davon " + pausenMin + " Min. Sicherheitspausen)" : "") + ".");
-  if (bruttoMin >= 55) {
+  if (r.abstand > sekunden) {
+    // Gleichmaessiges Tempo (02.10.2026): Statt nach wenigen Minuten
+    // aufgebraucht zu sein, verteilen sich die Suchen ueber die Stunde
+    // (content.js suchWarteMs). Eine Wartepause gibt es nur noch, wenn
+    // Preis-Checks oder Scans die Stunde trotzdem fuellen.
+    teile.push("Der Bot verteilt die " + proStunde + " Suchen gleichmäßig über die Stunde: rund alle " +
+      Math.round(r.abstand) + " Sekunden eine (Tempo „" + name + "“ allein wären " + sekunden.toLocaleString("de-DE") +
+      " Sek.). So ist die Stunde nicht nach wenigen Minuten verbraucht.");
+  } else {
+    teile.push("Bei Tempo „" + name + "“ (rund " + sekunden.toLocaleString("de-DE") + " Sek. je Suche) sind " +
+      proStunde + " Suchen nach etwa " + bruttoMin + " Minuten aufgebraucht" +
+      (pausenMin > 0 ? " (davon " + pausenMin + " Min. Sicherheitspausen)" : "") + ".");
+  }
+  if (r.abstand > sekunden || bruttoMin >= 55) {
     teile.push("Damit kann der Bot fast durchgehend arbeiten.");
   } else {
     teile.push("Danach wartet er bis zu " + (60 - bruttoMin) + " Minuten, bis die Stunde wieder Platz hat.");
@@ -3101,8 +3315,10 @@ function renderGrenzen(st) {
         Math.min(laufzeit, bruttoMin) + " Minuten, statt zu warten. Wer durchgehend suchen will, lässt das Feld Laufzeit leer.");
     }
   }
+  // 02.10.2026: Mit Pausen und Verteilung schafft eine Stunde weniger als
+  // proStunde - gerechnet wird mit dem, was wirklich hineinpasst.
   teile.push("Das Tagesbudget von " + proTag + " Suchen reicht für rund " +
-    Math.max(1, Math.round(proTag / Math.max(1, proStunde))) + " solcher Stunden.");
+    Math.max(1, Math.round(proTag / Math.max(1, Math.min(proStunde, 3600 / r.sekundenBrutto)))) + " solcher Stunden.");
   feld.textContent = teile.join(" ");
   feld.className = proStunde > 150 || proTag > 350 || getippt > STUNDE_HART ? "hint warn" : "hint";
 }
@@ -3221,7 +3437,7 @@ function renderTargets(force, notiz) {
   const abgelaufen = targets.map(liveAbgelaufen);
   // FST-Modus (Punkt 3): kein Ablauf, aber der alte Preis wird gelb gezeigt.
   const preisAelter = fstAn() ? targets.map(liveAlt) : targets.map(() => false);
-  const preisAlt = targets.map((t) => t.source !== "live" && priceAgeFor(t) > PRICE_FRESH_MS);
+  const preisAlt = targets.map((t) => t.source !== "live" && t.source !== "chance" && priceAgeFor(t) > PRICE_FRESH_MS);
   const nachpruefen = $("autoCheckOnStart").checked;
   const sperre = aktuelleSperre();
   const key = JSON.stringify([targets, [...progress.values()].map((p) => [p.key, p.bought, p.missed]), running,
@@ -3255,7 +3471,9 @@ function renderTargets(force, notiz) {
         const flag = document.createElement("small");
         flag.className = "target-flag";
         flag.textContent = "abgelaufen";
-        row.title = "Der Live-Filter ist älter als 15 Minuten. Der Lauf überspringt ihn. Unter „Filter“ kannst du ihn erneuern.";
+        row.title = t.source === "chance"
+          ? "Die Chance ist älter als 30 Minuten. Der Lauf überspringt sie. Unter „Radar“ siehst du, ob sie noch gilt."
+          : "Der Live-Filter ist älter als 15 Minuten. Der Lauf überspringt ihn. Unter „Filter“ kannst du ihn erneuern.";
         name.append(flag);
       } else if (preisAelter[index]) {
         const flag = document.createElement("small");
@@ -3271,6 +3489,14 @@ function renderTargets(force, notiz) {
         row.title = stand.keinGewinn
           ? "Nach 5 % EA-Gebühr bringt der Verkauf nur " + fmt(stand.saleNet) + " Coins. So startet der Bot nicht."
           : "Vorschlag: " + (stand.vorschlag > 0 ? fmt(stand.vorschlag) : "kein sinnvoller Zielpreis") + ". Der Gewinn wird kleiner.";
+        name.append(flag);
+      } else if (t.source === "chance" && t.salePrice > 0) {
+        // Woher die Zeile kommt und womit der Verkauf rechnet (02.10.2026).
+        const flag = document.createElement("small");
+        flag.className = "target-flag chance-flag";
+        flag.textContent = "Chance · Ziel " + fmt(t.salePrice);
+        row.title = "Aus dem Radar: kaufen bis " + fmt(t.maxPrice) + ", verkaufen um " + fmt(t.salePrice) +
+          ", wenn sich der Preis erholt. Gilt bis " + hhmm(t.expiresAt) + ".";
         name.append(flag);
       }
       const price = document.createElement("span");
@@ -3349,8 +3575,11 @@ function renderTargets(force, notiz) {
   }
   const weg = targets.filter((t, i) => abgelaufen[i]);
   if (weg.length) {
+    const nurChancen = weg.every((t) => t.source === "chance");
     warnungen.push("Abgelaufen: " + weg.map((t) => t.playerName).join(", ") +
-      ". Der Lauf überspringt " + (weg.length === 1 ? "diesen Live-Filter" : "diese Live-Filter") + " – unter „Filter“ kannst du erneuern.");
+      (nurChancen
+        ? ". Der Lauf überspringt " + (weg.length === 1 ? "diese Chance" : "diese Chancen") + " – unter „Radar“ siehst du, was noch gilt."
+        : ". Der Lauf überspringt " + (weg.length === 1 ? "diesen Live-Filter" : "diese Live-Filter") + " – unter „Filter“ kannst du erneuern."));
   }
   if (preisAelter.some(Boolean)) {
     warnungen.push("Der Preis ist älter als 15 Minuten: " + targets.filter((t, i) => preisAelter[i]).map((t) => t.playerName).join(", ") + ". Der Lauf geht trotzdem los.");
@@ -3652,12 +3881,29 @@ function verkaufVorschlag(item) {
     typeof item.playStyle === "number" && Number.isFinite(item.playStyle) &&
     item.playStyle !== gefunden.entry.chem;
   const verkauf = verkaufsPreis(gefunden.entry, preisMethodeValue());
-  let preis = roundDownToStep(verkauf.preis);
-  if (item.eaMin) preis = Math.max(preis, item.eaMin);
-  if (item.eaMax) preis = Math.min(preis, item.eaMax);
+  let wunsch = verkauf.preis;
+  // Unbestaetigter Preissprung (02.10.2026): Zum Verkaufen gilt der groessere
+  // der beiden Preise - dieselbe Regel wie content.js listPreisFuer, beide
+  // Stellen muessen denselben Preis rechnen. Kein automatischer Preis-Check.
+  const e = gefunden.entry;
+  const ps = e.preisSprung && typeof e.preisSprung === "object" ? e.preisSprung : null;
+  const vorher = ps ? Number(ps.vorher) || 0 : 0;
+  if (vorher > (Number(e.market) || 0)) {
+    const altVp = verkaufsPreis({ market: vorher, eaMin: e.eaMin, eaMax: e.eaMax }, preisMethodeValue());
+    if (altVp.preis > wunsch) wunsch = altVp.preis;
+  }
+  // Startgebot und Sofortkauf aus derselben Rechnung wie im Motor
+  // (02.10.2026). Frueher wurde hier auf genau eaMin geklemmt - genau das
+  // lehnte EA dann ab (Fund 25). Eine zu enge Spanne zeigt der Knopf als
+  // "Nicht einstellbar", statt eine Anfrage fuer nichts zu schicken.
+  const ep = einstellPreise(wunsch, item.eaMin, item.eaMax);
+  const preis = ep.sofort || roundDownToStep(wunsch);
+  const einstellFehler = ep.fehler === "spanne"
+    ? "EAs Preisspanne für diese Karte lässt keinen Sofortkauf über dem Mindestpreis zu."
+    : ep.fehler ? "Für diesen Preis gibt es kein gültiges Startgebot." : "";
   const alter = Date.now() - gefunden.entry.t;
   const netto = Math.floor(preis * (1 - SALE_FEE));
-  return { preis, alter, frisch: !chemieFalsch && alter <= VERKAUF_PREIS_FRISCH_MS, chemieFalsch, netto, verkauf, gewinn: item.gekauftFuer > 0 ? netto - item.gekauftFuer : null };
+  return { preis, start: ep.start, einstellFehler, preisSprung: ps ? ps.hinweis || "" : "", alter, frisch: !chemieFalsch && alter <= VERKAUF_PREIS_FRISCH_MS, chemieFalsch, netto, verkauf, gewinn: item.gekauftFuer > 0 ? netto - item.gekauftFuer : null };
 }
 
 // Eigener Name: gewinnText gibt es schon (Text fuer Kopfzeile und Kaufliste).
@@ -3712,11 +3958,18 @@ function verkaufZeile(item, st) {
     if (verkaufPreisLaeuft === item.itemId) {
       knopf.textContent = "prüfe … " + verkaufPreisSuchen;
       knopf.disabled = true;
+    } else if (vorschlag && vorschlag.frisch && vorschlag.einstellFehler) {
+      // EAs Spanne laesst keinen gueltigen Preis zu (02.10.2026): Der Knopf
+      // sagt es, statt eine Anfrage zu schicken, die EA ablehnen wuerde.
+      knopf.textContent = "Nicht einstellbar";
+      knopf.disabled = true;
+      knopf.title = vorschlag.einstellFehler;
     } else if (vorschlag && vorschlag.frisch) {
       knopf.classList.add("go");
       knopf.textContent = "Einstellen " + fmt(vorschlag.preis);
-      knopf.title = "Für " + fmt(vorschlag.preis) + " Coins (Startgebot eine Stufe darunter) eine Stunde einstellen. Nach 5 % Gebühr bleiben " + fmt(vorschlag.netto) + "." +
-        (vorschlag.verkauf && vorschlag.verkauf.quelle === "alter" ? " Preis nach Alter: " + verkaufsPreisGrund(vorschlag.verkauf) : "");
+      knopf.title = "Für " + fmt(vorschlag.preis) + " Coins (Startgebot " + fmt(vorschlag.start) + ") eine Stunde einstellen. Nach 5 % Gebühr bleiben " + fmt(vorschlag.netto) + "." +
+        (vorschlag.verkauf && vorschlag.verkauf.quelle === "alter" ? " Preis nach Alter: " + verkaufsPreisGrund(vorschlag.verkauf) : "") +
+        (vorschlag.preisSprung ? " " + vorschlag.preisSprung : "");
       knopf.disabled = beschaeftigt || Boolean(sperre);
       if (sperre) knopf.title = sperre;
       knopf.addEventListener("click", () => verkaufEinstellen(item, vorschlag.preis));
@@ -4212,6 +4465,10 @@ function startSperrGrund(st) {
   if (st.running) return "Der Bot läuft gerade. Erst stoppen.";
   if (st.check && st.check.running) return "Ein Preis-Check läuft gerade.";
   if (st.marketScan && st.marketScan.running) return "Der Markt-Scan läuft gerade.";
+  // Dieselbe Regel wie in content.js start() (02.10.2026): keine zwei
+  // Anfrage-Stroeme gleichzeitig. Nur "lesen" (Speicher der App, keine
+  // EA-Anfrage) sperrt nicht.
+  if (st.verkauf && st.verkauf.laeuft && st.verkauf.art !== "lesen") return "Eine Verkaufs-Aktion läuft noch. Gleich nochmal.";
   return "";
 }
 
@@ -4538,10 +4795,11 @@ for (const feld of ["budget", "autoBudget"]) {
 // Welche Einstellungen der Autopilot sonst noch mitnimmt. Sie stehen im
 // Manuellen Modus (Schritt 5 und Start-Fenster) - ohne diese Zeile galten sie
 // im Auto-Modus unsichtbar.
-const TEMPO_TEXT = { safe: "Sicher", normal: "Normal", turbo: "Turbo (mehr Risiko)" };
+// "schonend" (02.10.2026): Profil "Konto-schonend", siehe applyStartProfile.
+const TEMPO_TEXT = { safe: "Sicher", normal: "Normal", turbo: "Turbo (mehr Risiko)", schonend: "Konto-schonend" };
 // "aus" seit 27.09.2026. Ohne den Eintrag stuende in der Uebersicht
 // faelschlich "Pausen ausgewogen", obwohl keine gemacht werden.
-const PAUSEN_TEXT = { off: "aus", short: "kurz", medium: "ausgewogen", long: "lang", fst: "wie FST" };
+const PAUSEN_TEXT = { off: "aus", short: "kurz", medium: "ausgewogen", long: "lang", fst: "wie FST", schonend: "konto-schonend" };
 const DANACH_TEXT = { transfer: "auf die Transferliste", club: "in den Verein", keep: "liegen lassen", list: "gleich verkaufen" };
 
 function renderAutoEinstellungen() {
@@ -5326,7 +5584,9 @@ function rotationKandidaten(ohneAuswahl) {
       if (a.key === letzterKey && b.key !== letzterKey) return 1;
       if (b.key === letzterKey && a.key !== letzterKey) return -1;
     }
-    return b.score - a.score || b.suggestion.expectedProfit - a.suggestion.expectedProfit;
+    // 02.10.2026: dieselbe Reihenfolge wie die Liste - nach echtem Gewinn je
+    // Suche (Auto) oder nach Wertung (Manuell).
+    return filterZeilenVergleich(a, b);
   });
 }
 
@@ -5629,7 +5889,10 @@ async function rotationLauf() {
       // FST-Modus (Punkt 4c): Im Auto-Handel hat FST keine Sicherheitspausen
       // (useBreaks=false, scripts.js Z. 42257). Die Pause zwischen zwei Filtern
       // bleibt; innerhalb eines Filters wird ohne Pausen gesucht.
-      if (fstAn()) lauf.pausePreset = "off";
+      // 02.10.2026: Wer ausdruecklich "Konto-schonend" waehlt, behaelt die
+      // Pausen auch in der Rotation - sonst waere das Profil dort still
+      // wirkungslos. Fuer alle bisherigen Pausen-Stufen bleibt es bei "aus".
+      if (fstAn() && $("pausePreset").value !== "schonend") lauf.pausePreset = "off";
       const sperren = startPruefung([ziel], lauf).blockers;
       if (sperren.length) {
         rotationText = "Fertig: " + sperren[0];
@@ -6657,7 +6920,9 @@ function marktDetailOeffnen() {
   const g = (letzterStatus && letzterStatus.gedaechtnis) || null;
   if ($("markt-gedaechtnis")) {
     $("markt-gedaechtnis").textContent = g ? fmt(g.karten) + " Karten" : "–";
-    $("markt-gedaechtnis").title = "Jede Suche bringt bis zu 21 Angebote mit. Der Bot hebt sie auf: billigster je gesehener Preis, Mittelwert und wie oft eine Karte auftaucht. Das kostet keine einzige zusätzliche Anfrage.";
+    // Handsuchen (02.10.2026): auch die eigenen Suchen des Nutzers fuellen das
+    // Gedaechtnis - ohne Anfrage. Die Zahl zeigt, ob das Mitlesen greift.
+    $("markt-gedaechtnis").title = "Jede Suche bringt bis zu 21 Angebote mit. Der Bot hebt sie auf: billigster je gesehener Preis, Mittelwert und wie oft eine Karte auftaucht. Das kostet keine einzige zusätzliche Anfrage." + (letzterStatus && letzterStatus.handsuche && letzterStatus.handsuche.suchen > 0 ? " Dazu kommen " + fmt(letzterStatus.handsuche.suchen) + " deiner eigenen Suchen in der Web App, nur mitgelesen." : "");
   }
   $("markt-naechstes").textContent = stand.naechstes || "noch unbekannt";
   // Ehrlicher Hinweis (27.09.2026): Wir kennen nur Zeiten, in denen schon
@@ -6846,6 +7111,7 @@ function render(res) {
     $("market-scan-msg").textContent = "Öffne die EA-Web-App, lade sie mit F5 neu und öffne einmal den Transfermarkt.";
     $("usage-hint").textContent = "";
     $("filter-empty").textContent = "Noch keine Live-Marktdaten, weil der Bot nicht mit der EA-Web-App verbunden ist.";
+    renderAssistentUndChancen();
     return;
   }
 
@@ -6962,6 +7228,23 @@ function render(res) {
   $("s-bids-box").title = outcome.length
     ? "Abgegebene Gebote: " + outcome.join(", ") + "."
     : "Abgegebene Gebote; ein Gebot ist noch kein gewonnener Spieler.";
+  renderAssistentUndChancen();
+}
+
+// 02.10.2026: Assistent und Chancen haengen am Status (laeuft, Stapel,
+// Sperre). Beide zeichnen nur neu, wenn sich etwas geaendert hat.
+function renderAssistentUndChancen() {
+  // Am Wurzelelement: laeuft der Bot? Die einfache Ansicht blendet die leeren
+  // Lauf-Zahlen aus, solange nichts laeuft (popup-design.css).
+  const wurzel = WURZEL === document ? document.documentElement : WURZEL.querySelector(".blatt");
+  if (wurzel) wurzel.classList.toggle("laeuft", Boolean(letzterStatus && letzterStatus.running));
+  renderAssistent();
+  renderChancen();
+  if ($("chancen-scan")) {
+    const scan = (letzterStatus && letzterStatus.marketScan) || {};
+    $("chancen-scan").disabled = !letzterStatus || Boolean(scan.running) || $("scan-market").disabled;
+    $("chancen-scan").textContent = scan.running ? "Markt wird gescannt …" : "Markt scannen";
+  }
 }
 
 async function poll() {
@@ -6992,6 +7275,8 @@ function preisStandFuer(target) {
     const ende = Number(target.expiresAt) || 0;
     return ende > 0 ? ende - 15 * 60000 : Date.now();
   }
+  // Chance (02.10.2026): Zeitpunkt der letzten Messung im Preisverlauf.
+  if (target && target.source === "chance" && Number(target.salePrice) > 0) return Number(target.preisAt) || 0;
   const entries = history[targetKey(target)];
   const entry = Array.isArray(entries) ? entries[entries.length - 1] : null;
   return entry && entry.t ? Number(entry.t) : 0;
@@ -7025,7 +7310,9 @@ function priceAgeFor(target) {
 function gewinnStand(target) {
   const maxPrice = Number(target && target.maxPrice) || 0;
   if (!(maxPrice > 0)) return null;
-  if (target.source === "live" && target.salePrice > 0) {
+  // Chancen (02.10.2026) wie Live-Filter: Ihr Verkaufspreis ist das Ziel aus
+  // dem eigenen Preisverlauf, nicht der gefallene Marktpreis von jetzt.
+  if ((target.source === "live" || target.source === "chance") && target.salePrice > 0) {
     const saleNet = Math.floor(target.salePrice * (1 - SALE_FEE));
     return { alt: false, saleNet, vorschlag: 0, keinGewinn: maxPrice >= saleNet, ueberVorschlag: false };
   }
@@ -7077,8 +7364,11 @@ function gewinnSperre(list) {
 // Frische Preise kosten keine EA-Anfrage, werden aber trotzdem auf Gewinn
 // geprueft (gewinnSperre ganz am Ende).
 // Ziele mit altem Preis. Live-Filter wurden beim Laden bereits frisch geprueft.
+// Chancen (02.10.2026) auch nicht: Der normale Preis-Check rechnet mit dem
+// Verkauf zum Marktpreis von jetzt und wuerde jeden Dip-Kauf als "zu teuer"
+// ablehnen. Eine Chance laeuft stattdessen nach 30 Minuten ab (liveAlt).
 function altePreise(list) {
-  return list.filter((t) => t.source !== "live" && priceAgeFor(t) > PRICE_FRESH_MS);
+  return list.filter((t) => t.source !== "live" && t.source !== "chance" && priceAgeFor(t) > PRICE_FRESH_MS);
 }
 
 // Satz, wenn der Start zu viele alte Preise nachpruefen muesste. Sonst "".
@@ -7525,6 +7815,7 @@ function selectTab(tab, moveFocus) {
   // Ein Klick darauf heisst: weg vom Dialog, hin zum Reiter.
   if (!$("start-modal-wrap").hidden) closeStartModal();
   if (!$("filter-modal-wrap").hidden) closeFilterModal();
+  if ($("tour-wrap") && !$("tour-wrap").hidden) tourSchliessen();
   const gewechselt = tab.getAttribute("aria-selected") !== "true";
   for (const other of tabList) {
     const active = other === tab;
@@ -7538,16 +7829,20 @@ function selectTab(tab, moveFocus) {
   if (gewechselt) nachObenScrollen();
   // Kaeufe: Transferliste aus dem Speicher der Web App lesen - kostet nichts.
   if (gewechselt && tab.id === "tab-buys") verkaufLesen(false);
+  if (gewechselt) renderAssistent(); // seine Knoepfe haengen am offenen Reiter
 }
 
-for (const [index, tab] of tabList.entries()) {
+for (const tab of tabList) {
   tab.addEventListener("click", () => selectTab(tab, false));
   tab.addEventListener("keydown", (event) => {
+    // Einfach (02.10.2026): versteckte Reiter gibt es fuer die Tastatur nicht.
+    const sichtbar = tabList.filter((t) => !(ansicht === "einfach" && t.hasAttribute("data-profi")));
+    const index = Math.max(0, sichtbar.indexOf(tab));
     const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
     let next = null;
-    if (step) next = tabList[(index + step + tabList.length) % tabList.length];
-    else if (event.key === "Home") next = tabList[0];
-    else if (event.key === "End") next = tabList[tabList.length - 1];
+    if (step) next = sichtbar[(index + step + sichtbar.length) % sichtbar.length];
+    else if (event.key === "Home") next = sichtbar[0];
+    else if (event.key === "End") next = sichtbar[sichtbar.length - 1];
     if (!next) return;
     event.preventDefault();
     selectTab(next, true);
@@ -7559,6 +7854,7 @@ for (const [index, tab] of tabList.entries()) {
 // weiterwusste, musste den passenden Absatz selbst suchen.
 const HILFE_ANKER = {
   "tab-snipe": "hilfe-snipe",
+  "tab-chancen": "hilfe-chancen",
   "tab-filters": "hilfe-filters",
   "tab-buys": "hilfe-buys",
   "tab-settings": "hilfe-settings",
@@ -7656,8 +7952,11 @@ async function startRun(onlyTargets, lauf) {
   if (expired.length) {
     list = list.filter((target) => !liveAbgelaufen(target));
     if (!list.length) {
-      notice = (expired.length === 1 ? "Der Live-Filter für " + expired[0].playerName + " ist" : "Alle Live-Filter sind") +
-        " abgelaufen. Erneuere " + (expired.length === 1 ? "ihn" : "sie") + " unter „Filter“.";
+      notice = expired.every((t) => t.source === "chance")
+        ? (expired.length === 1 ? "Die Chance für " + expired[0].playerName + " ist" : "Alle Chancen sind") +
+          " abgelaufen. Unter „Radar“ siehst du, was noch gilt."
+        : (expired.length === 1 ? "Der Live-Filter für " + expired[0].playerName + " ist" : "Alle Live-Filter sind") +
+          " abgelaufen. Erneuere " + (expired.length === 1 ? "ihn" : "sie") + " unter „Filter“.";
       render(lastRes || { ok: false, error: notice });
       return false;
     }
@@ -7690,7 +7989,8 @@ async function startRun(onlyTargets, lauf) {
         // Ohne diese Zeile waere das Feld ein toter Punkt: gespeichert,
         // aber nie beim Start dabei.
         listFestpreis: Number(t.listFestpreis) >= VERKAUF_MIN_PREIS ? Math.floor(Number(t.listFestpreis)) : 0,
-        maxPrice: t.maxPrice, expiresAt: t.expiresAt || 0, salePrice: t.source === "live" && Number(t.salePrice) > 0 ? Number(t.salePrice) : marktwertFuer({ playerId: t.playerId, rating: t.rating, rarity: t.rarity }, history), salePriceAt: preisStandFuer(t),
+        chance: t.source === "chance",
+        maxPrice: t.maxPrice, expiresAt: t.expiresAt || 0, salePrice: (t.source === "live" || t.source === "chance") && Number(t.salePrice) > 0 ? Number(t.salePrice) : marktwertFuer({ playerId: t.playerId, rating: t.rating, rarity: t.rarity }, history), salePriceAt: preisStandFuer(t),
         // Die gemessene Chemie mitgeben (27.09.2026). Ohne sie kauft der Motor
         // jede Chemie zu einem Preis, der nur fuer eine gilt. null heisst:
         // Messung war gemischt, keine Sperre.
@@ -8014,15 +8314,18 @@ function startPruefung(alleZiele, lauf) {
   }
   if (!list.length) {
     blockers.push(weg.length
-      ? "Alle Live-Filter in der Liste sind abgelaufen. Erneuere sie unter „Filter“."
+      ? (weg.every((t) => t.source === "chance")
+        ? "Alle Chancen in der Liste sind abgelaufen. Unter „Radar“ siehst du, was noch gilt."
+        : "Alle Live-Filter in der Liste sind abgelaufen. Erneuere sie unter „Filter“.")
       : "Kein Spieler gewählt.");
   } else if (weg.length) {
-    warnings.push("Abgelaufen, wird übersprungen: " + weg.map((t) => t.playerName).join(", ") + ". Unter „Filter“ kannst du erneuern.");
+    warnings.push("Abgelaufen, wird übersprungen: " + weg.map((t) => t.playerName).join(", ") +
+      (weg.every((t) => t.source === "chance") ? ". Unter „Radar“ siehst du, was noch gilt." : ". Unter „Filter“ kannst du erneuern."));
   }
   // FST-Modus (Punkt 3): Kein Ablauf, keine Sperre - nur eine gelbe Warnung.
   // (Die Pruefung steht hier ausgeschrieben: dieser Block laeuft in Tests ohne
   // die Hilfsfunktion liveAlt.)
-  const preisAelter = fst ? alleZiele.filter((t) => t && t.source === "live" && t.expiresAt > 0 && t.expiresAt <= Date.now()) : [];
+  const preisAelter = fst ? alleZiele.filter((t) => t && (t.source === "live" || t.source === "chance") && t.expiresAt > 0 && t.expiresAt <= Date.now()) : [];
   if (preisAelter.length) {
     warnings.push("Der Preis ist älter als 15 Minuten: " + preisAelter.map((t) => t.playerName).join(", ") + ". Der Lauf geht trotzdem los.");
   }
@@ -8126,11 +8429,12 @@ function startPruefung(alleZiele, lauf) {
   }
   // Nur Live-Filter in der Liste: Der Lauf endet, wenn der letzte abläuft.
   // Live gesehen: Laufzeit 30 Min., der Filter galt aber nur noch 11.
-  const liveEnden = list.map((t) => (t.source === "live" ? Number(t.expiresAt) || 0 : 0));
+  const liveEnden = list.map((t) => (t.source === "live" || t.source === "chance" ? Number(t.expiresAt) || 0 : 0));
   if (!fst && list.length && liveEnden.every((ende) => ende > 0)) {
     const restMin = Math.max(1, Math.ceil((Math.max(...liveEnden) - Date.now()) / 60000));
     if (restMin < (timeLimit || 300)) {
-      hinweise.push((list.length === 1 ? "Der Live-Filter gilt" : "Die Live-Filter gelten") + " nur noch " + restMin +
+      const nurChancen = list.every((t) => t.source === "chance");
+      hinweise.push((list.length === 1 ? (nurChancen ? "Die Chance gilt" : "Der Live-Filter gilt") : (nurChancen ? "Die Chancen gelten" : "Die Live-Filter gelten")) + " nur noch " + restMin +
         " Min. – dann endet der Lauf, auch wenn die Laufzeit länger ist.");
     }
   }
@@ -8158,7 +8462,7 @@ function startPruefung(alleZiele, lauf) {
 // "Einstellungen im Ueberblick" im Start-Dialog (30.09.2026): kleine Chips wie
 // FSTs "Settings overview" (Name grau, Wert weiss und fett). Nur Anzeige - sie
 // lesen die Felder, die im Dialog darunter stehen, und aendern nichts.
-const PAUSEN_NAMEN = { short: "Kurz", medium: "Ausgewogen", long: "Lang", off: "Aus", fst: "Wie FST" };
+const PAUSEN_NAMEN = { short: "Kurz", medium: "Ausgewogen", long: "Lang", off: "Aus", fst: "Wie FST", schonend: "Schonend" };
 
 function startChips(anzahl) {
   const r = laufzeitRechnung(letzterStatus);
@@ -8234,9 +8538,11 @@ function startSafetyInfo() {
   // Verkaufspreis (Bildschirm 900, Bot 1.100). Deshalb steht hier keine
   // zweite mehr.
   const secondsPerSearch = laufzeitRechnung(letzterStatus).sekundenBrutto;
-  // Ist das Tempo schneller als das Stundenlimit (bei allen Profilen so), ist
-  // die Stunde vor Ablauf der Laufzeit voll. Die Schaetzung nennt deshalb nur
-  // die Suchen, die in DIESER Stunde noch hineinpassen.
+  // Ist das Tempo schneller als das Stundenlimit, ist die Stunde vor Ablauf
+  // der Laufzeit voll. Die Schaetzung nennt deshalb nur die Suchen, die in
+  // DIESER Stunde noch hineinpassen. 02.10.2026: Im strengen Modus verteilt
+  // der Bot die Suchen jetzt gleichmaessig (sekundenBrutto enthaelt den
+  // Abstand) - dort greift diese Klemme nicht mehr.
   // 27.09.2026: Der Bot stoppt dort nicht mehr, er wartet auf die naechste
   // freie Anfrage. Die Wanduhr-Zeit kann darum laenger werden als die
   // geschaetzten Minuten - die Zahl der Suchen bleibt richtig.
@@ -8254,7 +8560,12 @@ function applyStartProfile(profile) {
   const profiles = {
     safe: { speed: "safe", pause: "long", searches: 60, buys: 2 },
     balanced: { speed: "normal", pause: "medium", searches: 100, buys: 3 },
-    intense: { speed: "turbo", pause: "short", searches: 150, buys: 5 }
+    intense: { speed: "turbo", pause: "short", searches: 150, buys: 5 },
+    // "Konto-schonend" (02.10.2026) nach MagicBuyers Profil "prudent": 8-14 s
+    // je Suche, hoechstens 6 pro Minute, alle 12-18 Suchen eine Pause und
+    // hoechstens 90 Minuten Laufzeit. Gedacht fuer die Zeit nach einer
+    // Sperre. Den Modus (fstModus) fasst das Profil nicht an.
+    schonend: { speed: "schonend", pause: "schonend", searches: 60, buys: 2, maxMin: 90 }
   };
   const value = profiles[profile] || profiles.balanced;
   // Ein Schnellprofil ist eine bewusste Abweichung vom Standard - also Custom.
@@ -8265,6 +8576,18 @@ function applyStartProfile(profile) {
   $("pausePreset").value = value.pause;
   $("filterSearchLimit").value = String(value.searches);
   $("filterBuyLimit").value = String(value.buys);
+  // Hoechstens maxMin Minuten: Eine kuerzere eigene Laufzeit bleibt stehen,
+  // ein leeres Feld (= ohne Zeitlimit) oder eine laengere wird gekuerzt.
+  if (value.maxMin) {
+    const jetzt = Number($("timeLimitMin").value) || 0;
+    if (!(jetzt > 0) || jetzt > value.maxMin) {
+      setTuneMode("runtime", "custom");
+      $("timeLimitMin").value = String(value.maxMin);
+    }
+  }
+  // Programmatische Aenderungen loesen kein change-Ereignis aus - die
+  // Laufzeit-Zeile (Tempo, Pausen, Laufzeit) wird hier nachgezogen.
+  if (typeof renderLaufzeit === "function") renderLaufzeit(letzterStatus);
   for (const button of WURZEL.querySelectorAll("#sm-profile button")) button.classList.toggle("active", button.dataset.value === profile);
   saveSettings();
   startSafetyInfo();
@@ -8493,7 +8816,9 @@ let collections = {};
 // sie beim Laden die Liste ueberschreiben.
 // ---------------------------------------------------------------------------
 // fstModus (01.10.2026): globaler Schalter - er darf nicht in Sammlungen wandern.
-const PROFIL_AUS = ["rating", "rarity", "maxPrice", "rarity-wahl", "fstModus"];
+// warnungStopp (02.10.2026): ebenso ein globaler Sicherheitsschalter. Laedt
+// jemand eine alte Sammlung, darf der Haken nicht still mitwandern.
+const PROFIL_AUS = ["rating", "rarity", "maxPrice", "rarity-wahl", "fstModus", "warnungStopp"];
 
 function profilLesen() {
   const profil = {};
@@ -9374,6 +9699,8 @@ $("probe").addEventListener("click", async () => {
 for (const field of NUMBER_FIELDS) $(field).addEventListener("change", saveSettings);
 for (const field of CHECK_FIELDS) $(field).addEventListener("change", saveSettings);
 for (const field of SELECT_FIELDS) $(field).addEventListener("change", saveSettings);
+// Sortierung der Filterliste sofort sichtbar machen (02.10.2026).
+$("profitSortMode").addEventListener("change", () => renderLiveFilters());
 // FST-Modus (01.10.2026): Nach dem Umschalten den Stand des Motors neu holen -
 // erst der Motor sagt, was wirklich gilt. Bis dahin steht die Anzeige noch im
 // alten Modus (das sind nur Sekundenbruchteile).
@@ -9692,8 +10019,12 @@ rotationMerkerPruefen();
 // EA-Anfrage.
 // ---------------------------------------------------------------------------
 
-const SPEICHER_GRENZE = 10 * 1024 * 1024; // Chrome-Grenze ohne unlimitedStorage
-const SPEICHER_ENG = 0.8; // ab hier wird aufgeraeumt empfohlen
+// Mit "unlimitedStorage" (manifest.json, seit 28.09.2026) gibt es keine
+// 10-MB-Grenze mehr. Wie content.js (speicherPruefen): Erst ab 200 MB stimmt
+// etwas nicht. Vorher warnte die Leiste schon ab 8 MB "Es wird eng" und
+// draengte zum Aufraeumen - das kuerzt Preisverlauf und Spielerliste grundlos.
+const SPEICHER_UNGEWOEHNLICH = 200 * 1024 * 1024;
+const SPEICHER_ENG = 0.8; // ab 160 MB wird aufgeraeumt empfohlen
 const PLAYERLIST_KURZ = 25000; // so viele Spieler bleiben beim Aufraeumen
 const HISTORY_KURZ = 20; // so viele Messungen bleiben je Karte
 
@@ -9711,12 +10042,12 @@ async function speicherStand() {
   }
   try {
     const belegt = await chrome.storage.local.getBytesInUse(null);
-    const anteil = belegt / SPEICHER_GRENZE;
-    feld.className = "hint" + (anteil >= SPEICHER_ENG ? " err" : anteil >= 0.6 ? " warn" : "");
-    feld.textContent = "Belegt: " + mbText(belegt) + " von 10 MB (" + Math.round(anteil * 100) + " %)." +
+    const anteil = belegt / SPEICHER_UNGEWOEHNLICH;
+    feld.className = "hint" + (anteil >= SPEICHER_ENG ? " err" : "");
+    feld.textContent = "Belegt: " + mbText(belegt) + "." +
       (anteil >= SPEICHER_ENG
-        ? " Es wird eng. Räum auf – sonst hört das Preis-Gedächtnis still auf zu wachsen, und der Bot rechnet mit alten Preisen weiter."
-        : "");
+        ? " Das ist ungewöhnlich viel – wahrscheinlich stimmt etwas nicht. Bitte aufräumen."
+        : " Die Erweiterung darf unbegrenzt speichern, Aufräumen ist nicht nötig.");
   } catch (e) {
     feld.className = "hint";
     feld.textContent = "Belegter Platz nicht lesbar: " + e.message;
@@ -9767,14 +10098,588 @@ $("speicher-aufraeumen").addEventListener("click", async () => {
 
 speicherStand();
 
+// ---------------------------------------------------------------------------
+// Chancen, Assistent, Einfach/Profi und Einfuehrung (02.10.2026)
+//
+// Chancen: Rangliste aus dem eigenen Preisverlauf (markt.js). Die Ansicht
+// fragt EA nie - der Verlauf fuellt sich aus den Suchen, die der Bot sowieso
+// macht (content.js marktVerlaufSichern).
+// Assistent: assistent.js uebersetzt den Zustand in einen Satz und hoechstens
+// zwei Knoepfe. Hier wird nur eingesammelt, gezeichnet und geklickt.
+// Einfach: blendet alles mit data-profi aus (CSS), sonst aendert sich nichts.
+// ---------------------------------------------------------------------------
+// Die Zustaende dazu stehen oben bei den anderen (MARKT, chancen, ansicht ...).
+
+function spielerFuer(id) {
+  if (spielerIndexQuelle !== players) {
+    spielerIndex = new Map(players.map((p) => [p.id, p]));
+    spielerIndexQuelle = players;
+  }
+  return spielerIndex.get(id) || null;
+}
+
+async function loadMarkt() {
+  let roh = {};
+  try {
+    roh = await chrome.storage.local.get(["marktVerlauf", "marktVerkaeufe"]);
+  } catch (e) {
+    roh = {};
+  }
+  const karten = (x) => (x && typeof x === "object" && x.karten && typeof x.karten === "object" ? x.karten : {});
+  marktVerlauf = karten(roh.marktVerlauf);
+  marktVerkaeufe = karten(roh.marktVerkaeufe);
+  chancenRechnen();
+  renderChancen();
+  renderAssistent();
+}
+
+// Spielername, Bestandteile des Schluessels und Verlauf an eine Karte haengen.
+function karteAnreichern(key, extra) {
+  const teile = MARKT.keyTeilen(key) || { playerId: 0, rating: 0, rarity: "" };
+  const spieler = spielerFuer(teile.playerId);
+  const verlauf = Array.isArray(marktVerlauf[key]) ? marktVerlauf[key] : [];
+  return Object.assign({ key }, extra, teile, { name: spieler ? spieler.name : "Spieler " + teile.playerId, verlauf });
+}
+
+function chancenRechnen() {
+  chancenAt = Date.now();
+  if (!MARKT) {
+    chancen = [];
+    radarDaten = { bestseller: [], guenstig: [], steigend: [], fallend: [] };
+    return;
+  }
+  chancenStand = MARKT.datenStand(marktVerlauf);
+  trefferStand = MARKT.backtestAlle(marktVerlauf, chancenAt);
+  chancen = MARKT.rangliste(marktVerlauf, { jetzt: chancenAt, quoten: trefferStand.jeKarte }).slice(0, CHANCEN_MAX).map((c) => {
+    const k = karteAnreichern(c.key, c);
+    const preisAt = k.verlauf.length ? k.verlauf[k.verlauf.length - 1][0] : chancenAt;
+    // Auf die Preisleiter von EA abrunden - so kauft der Bot auch wirklich.
+    const kaufBis = roundDownToStep(c.kauf);
+    const gewinn = MARKT.gewinn(kaufBis, c.ziel);
+    return Object.assign(k, { kaufBis, gewinn, marge: kaufBis > 0 ? gewinn / kaufBis : 0, preisAt, bis: preisAt + MARKT.FRISCH_MS });
+  });
+  // Die vier Preis- und Verkaufslisten. Jede Karte bekommt gleich einen
+  // Snipe-Plan (Snipen bis / Ziel), damit der Knopf in der Zeile weiss, was er tut.
+  const r = MARKT.radar(marktVerlauf, marktVerkaeufe, chancenAt, { max: CHANCEN_MAX });
+  const anreichern = (k) => {
+    const plan = MARKT.snipePlan(k);
+    const kaufBis = plan ? roundDownToStep(plan.kaufBis) : 0;
+    const gewinn = plan ? MARKT.gewinn(kaufBis, plan.ziel) : 0;
+    const preisAt = k.gesehenAt || chancenAt;
+    return karteAnreichern(k.key, Object.assign({}, k, {
+      ziel: plan ? plan.ziel : 0,
+      kaufBis: plan && gewinn > 0 && kaufBis >= VERKAUF_MIN_PREIS ? kaufBis : 0,
+      gewinn,
+      marge: kaufBis > 0 ? gewinn / kaufBis : 0,
+      preisAt,
+      bis: Math.max(preisAt, chancenAt) + MARKT.FRISCH_MS
+    }));
+  };
+  radarDaten = {
+    bestseller: r.bestseller.map(anreichern),
+    guenstig: r.guenstig.map(anreichern),
+    steigend: r.steigend.map(anreichern),
+    fallend: r.fallend.map(anreichern)
+  };
+}
+
+function chancenFrisch() {
+  if (Date.now() - chancenAt > CHANCEN_NEU_MS) chancenRechnen();
+  return chancen;
+}
+
+function chanceSpark(c) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "chance-spark");
+  svg.setAttribute("viewBox", "0 0 100 28");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const linie = document.createElementNS(SVG_NS, "polyline");
+  linie.setAttribute("points", MARKT ? MARKT.sparkPunkte(c.verlauf, 100, 28) : "");
+  svg.append(linie);
+  return svg;
+}
+
+function vorzeichenProzent(x) {
+  const p = Math.round(x * 100);
+  return (p > 0 ? "+" : p < 0 ? "−" : "") + Math.abs(p) + " %";
+}
+
+function vorMin(t) {
+  const min = Math.max(0, Math.round((Date.now() - t) / 60000));
+  return min < 1 ? "gerade eben" : min < 60 ? "vor " + min + " Min." : "vor " + Math.round(min / 60) + " Std.";
+}
+
+// Was eine Zeile je Rangliste zeigt: grosse Zahl rechts, drei Felder, ein Satz.
+function radarAnsicht(c, liste) {
+  if (liste === "chancen") {
+    return {
+      gross: "+" + fmt(c.gewinn), grossTitel: "Gewinn nach 5 % EA-Gebühr, wenn der Preis zum Ziel zurückkehrt", ton: "plus",
+      unter: [c.art === "dip" ? "Dip" : "steigt", c.alterMin > 0 ? "gesehen vor " + c.alterMin + " Min." : "gerade gesehen",
+        c.quote ? "erholte sich " + c.quote.treffer + " von " + c.quote.signale + "×" : ""],
+      felder: [["Kaufen bis", fmt(c.kaufBis)], ["Ziel", fmt(c.ziel)], ["Gewinn", Math.round(c.marge * 100) + " %"]],
+      satz: c.grund + "."
+    };
+  }
+  const felder = [["Jetzt", c.aktuell ? fmt(c.aktuell) : "–"], ["Üblich", c.ueblich ? fmt(c.ueblich) : "–"], ["Verkauft für", c.verkaufsPreis ? fmt(c.verkaufsPreis) : "–"]];
+  const satz = c.kaufBis > 0
+    ? "Snipen bis " + fmt(c.kaufBis) + ", verkaufen um " + fmt(c.ziel) + " – etwa +" + fmt(c.gewinn) + " Coins nach Gebühr."
+    : "Mit 5 % Gebühr bleibt hier gerade kein sicherer Gewinn.";
+  const gesehen = c.gesehenAt ? "gesehen " + vorMin(c.gesehenAt) : "";
+  if (liste === "bestseller") {
+    return {
+      gross: fmt(c.verkaeufe) + "×", grossTitel: "Erkannte Verkäufe in den letzten 3 Stunden", ton: "info",
+      unter: [String(c.verkaeufeStunde).replace(".", ",") + " pro Std.", gesehen], felder, satz
+    };
+  }
+  const wert = liste === "guenstig" ? c.abweichung : c.aenderung;
+  return {
+    gross: vorzeichenProzent(wert),
+    grossTitel: liste === "guenstig" ? "Abstand zum üblichen Preis" : "Änderung seit einer Stunde",
+    ton: wert < 0 ? (liste === "guenstig" ? "plus" : "minus") : "plus",
+    unter: [c.verkaeufe ? c.verkaeufe + " verkauft (3 Std.)" : "", gesehen], felder, satz
+  };
+}
+
+function chanceZeile(c, liste, schonDrauf, laeuft) {
+  const a = radarAnsicht(c, liste);
+  const row = document.createElement("article");
+  row.className = "chance";
+  row.dataset.art = liste === "chancen" ? c.art : liste;
+
+  const kopf = document.createElement("div");
+  kopf.className = "chance-kopf";
+  const name = document.createElement("div");
+  name.className = "chance-name";
+  const titel = document.createElement("b");
+  titel.textContent = c.name;
+  const unter = document.createElement("small");
+  unter.textContent = [c.rating ? "Rating " + c.rating : ""].concat(a.unter).filter(Boolean).join(" · ");
+  name.append(titel, unter);
+  const gross = document.createElement("span");
+  gross.className = "chance-gewinn " + a.ton;
+  gross.textContent = a.gross;
+  gross.title = a.grossTitel;
+  kopf.append(portrait(c.playerId, c.name), name, gross);
+  row.append(kopf);
+  if (c.verlauf && c.verlauf.length >= 2) row.append(chanceSpark(c));
+
+  const zahlen = document.createElement("div");
+  zahlen.className = "chance-zahlen";
+  for (const [label, wert] of a.felder) {
+    const feld = document.createElement("div");
+    const l = document.createElement("span");
+    l.textContent = label;
+    const w = document.createElement("b");
+    w.textContent = wert;
+    feld.append(l, w);
+    zahlen.append(feld);
+  }
+  const satz = document.createElement("p");
+  satz.className = "chance-grund";
+  satz.textContent = a.satz;
+
+  const knopf = document.createElement("button");
+  knopf.type = "button";
+  const moeglich = c.kaufBis > 0;
+  knopf.className = schonDrauf ? "secondary chance-knopf drauf" : moeglich ? "go chance-knopf" : "secondary chance-knopf";
+  knopf.textContent = schonDrauf ? "Auf deiner Liste ✓"
+    : liste === "chancen" ? "Auf meine Liste"
+      : moeglich ? "Snipen bis " + fmt(c.kaufBis) : "Kein Gewinn möglich";
+  knopf.disabled = schonDrauf || laeuft || !moeglich;
+  if (laeuft && !schonDrauf) knopf.title = "Während der Bot läuft, bleibt die Liste, wie sie ist.";
+  knopf.addEventListener("click", () => chanceAufListe(c));
+
+  row.append(zahlen, satz, knopf);
+  return row;
+}
+
+
+function radarLeerText(liste) {
+  if (!MARKT) return "Die Markt-Analyse ist nicht geladen. Lade die Web App neu (F5).";
+  if (liste === "bestseller") {
+    return "Noch keine Verkäufe erkannt. Der Bot sieht einen Verkauf, wenn ein Angebot zwischen zwei Suchen vor seinem Ablauf verschwindet. Mehrere Markt-Scans im Abstand von ein paar Minuten bringen die ersten Zahlen.";
+  }
+  if (!(chancenStand.reif > 0)) {
+    return "Der Bot lernt noch die Preise. Jede Suche füllt den Verlauf, nach etwa einer Stunde erkennt er die ersten Bewegungen. Ein Markt-Scan beschleunigt das.";
+  }
+  return liste === "chancen"
+    ? "Gerade ist keine Karte günstig genug. Der Bot schaut bei jeder Suche weiter – fällt ein Preis, steht die Karte hier."
+    : "Gerade bewegt sich hier nichts Nennenswertes (unter 3 %). Der Bot schaut bei jeder Suche weiter.";
+}
+
+function radarEintraege(liste) {
+  return liste === "chancen" ? chancen : radarDaten[liste] || [];
+}
+
+function verkaeufeLetzteStunde() {
+  const grenze = Date.now() - 60 * 60 * 1000;
+  let n = 0;
+  for (const v of Object.values(marktVerkaeufe)) if (Array.isArray(v)) for (const p of v) if (p[0] > grenze) n += 1;
+  return n;
+}
+
+function renderChancen() {
+  const liste = $("chancen-liste");
+  if (!liste) return;
+  const eintraege = radarEintraege(radarListe);
+  const aufListe = new Set(targets.map(targetKey));
+  const laeuft = isRunning();
+  const verkauft = verkaeufeLetzteStunde();
+  const key = JSON.stringify([radarListe, trefferStand.gesamt, eintraege.map((c) => [c.key, c.kaufBis, c.ziel, c.alterMin, c.name, c.aktuell, c.verkaeufe, c.gesehenAt, c.quote]),
+    [...aufListe], laeuft, chancenStand, verkauft, Boolean(images)]);
+  if (key === chancenKey) return;
+  chancenKey = key;
+  for (const b of WURZEL.querySelectorAll("#radar-wahl button")) {
+    const an = b.dataset.liste === radarListe;
+    b.classList.toggle("active", an);
+    b.setAttribute("aria-checked", String(an));
+    // Kleine Zahl am Umschalter: wie viele Karten in der Liste stehen.
+    // Eigenes Element statt ::after - die Umschalter haben dort schon Stile.
+    if (!b.dataset.label) b.dataset.label = b.textContent;
+    const anzahl = radarEintraege(b.dataset.liste).length;
+    const zahl = document.createElement("small");
+    zahl.className = "radar-zahl";
+    zahl.textContent = anzahl ? String(anzahl) : "";
+    zahl.hidden = !anzahl;
+    b.replaceChildren(b.dataset.label, zahl);
+  }
+  const g = trefferStand.gesamt;
+  $("radar-erklaerung").textContent = (RADAR_ERKLAERUNG[radarListe] || "") + (radarListe === "chancen" && g.signale >= 3
+    ? " Trefferquote bisher: " + Math.round(g.quote * 100) + " % (" + g.treffer + " von " + g.signale + " Dips erholt" +
+      (g.dauerMin ? ", meist nach " + g.dauerMin + " Min." : "") + ")."
+    : "");
+  liste.replaceChildren(...eintraege.map((c) => chanceZeile(c, radarListe, aufListe.has(c.key), laeuft)));
+  $("chancen-stand").textContent = chancenStand.karten
+    ? (chancenStand.karten === 1 ? "1 Karte" : fmt(chancenStand.karten) + " Karten") + " · " + fmt(chancenStand.reif) + " mit Verlauf · " +
+      fmt(verkauft) + (verkauft === 1 ? " Verkauf" : " Verkäufe") + " in der letzten Std."
+    : "Noch keine Preise gemerkt";
+  $("chancen-leer").hidden = eintraege.length > 0;
+  if (!eintraege.length) {
+    $("chancen-leer").querySelector("b").textContent = radarListe === "chancen" ? "Noch keine Chancen" : radarListe === "bestseller" ? "Noch keine Bestseller" : "Gerade nichts";
+    $("chancen-leer-text").textContent = radarLeerText(radarListe);
+    const lernt = !(chancenStand.reif > 0) && radarListe !== "bestseller";
+    $("chancen-fortschritt").hidden = !lernt;
+    $("chancen-balken").style.width = Math.round(chancenStand.fortschritt * 100) + "%";
+  }
+}
+
+function radarZeigen(liste) {
+  radarListe = RADAR_ERKLAERUNG[liste] ? liste : "chancen";
+  chancenKey = "";
+  renderChancen();
+  try {
+    chrome.storage.local.set({ radarListe }).catch(() => {});
+  } catch (e) {}
+}
+
+for (const b of WURZEL.querySelectorAll("#radar-wahl button")) b.addEventListener("click", () => radarZeigen(b.dataset.liste));
+
+// Der Radar-Haken ist derselbe Schalter wie "Live-Filter automatisch alle 7
+// Minuten erneuern" (autoFilters) - gespeichert und gelesen wird nur dort.
+function radarAutoAbgleichen() {
+  if ($("radarAuto") && $("autoFilters")) $("radarAuto").checked = $("autoFilters").checked;
+}
+if ($("radarAuto")) {
+  $("radarAuto").addEventListener("change", () => {
+    $("autoFilters").checked = $("radarAuto").checked;
+    $("autoFilters").dispatchEvent(new Event("change"));
+  });
+  $("autoFilters").addEventListener("change", radarAutoAbgleichen);
+}
+
+function chancenMeldung(text, level, mitStart) {
+  const el = $("chancen-msg");
+  el.className = "hint" + (level ? " " + level : "");
+  el.textContent = text;
+  if (mitStart) {
+    const start = document.createElement("button");
+    start.type = "button";
+    start.className = "go chancen-start";
+    start.textContent = "Jetzt starten";
+    start.addEventListener("click", chanceStarten);
+    el.append(" ", start);
+  }
+}
+
+async function chanceAufListe(c) {
+  if (isRunning()) {
+    chancenMeldung("Während der Bot läuft, bleibt die Liste, wie sie ist. Stoppe ihn zuerst.", "warn");
+    return;
+  }
+  if (!(c.kaufBis > 0) || !(c.ziel > 0)) return;
+  // Wie ein Live-Filter: Der Verkaufspreis faehrt mit (salePrice = Ziel), die
+  // Zeile laeuft ab (expiresAt), und preisAt sagt, wann gemessen wurde.
+  const neu = {
+    playerId: c.playerId, playerName: c.name, rating: c.rating, rarity: c.rarity, maxPrice: c.kaufBis,
+    source: "chance", salePrice: c.ziel, preisAt: c.preisAt, expiresAt: c.bis, score: Math.round(c.score || c.gewinn || 0)
+  };
+  const key = targetKey(neu);
+  const index = targets.findIndex((t) => targetKey(t) === key);
+  if (index < 0 && targets.length >= MAX_TARGETS) {
+    chancenMeldung("Deine Liste ist voll (höchstens " + MAX_TARGETS + " Spieler). Entferne zuerst einen unter Snipen.", "warn");
+    return;
+  }
+  if (index >= 0) targets[index] = Object.assign({}, targets[index], neu);
+  else targets.push(neu);
+  targets = sanitizeTargets(targets);
+  await saveSettings();
+  renderTargets(true);
+  chancenKey = "";
+  renderChancen();
+  renderAssistent();
+  chancenMeldung(c.name + " ist auf deiner Liste: kaufen bis " + fmt(c.kaufBis) + ", Ziel " + fmt(c.ziel) + ".", "ok", true);
+}
+
+// "Jetzt starten": zur Liste unter Snipen und gleich die Zusammenfassung vor
+// dem Start zeigen. Gestartet wird erst dort - mit allen Pruefungen wie sonst.
+function chanceStarten() {
+  setSnipeMode("manual");
+  goToStep(3);
+  selectTab($("tab-snipe"), false);
+  openStartModal();
+}
+
+function marktScannen() {
+  const knopf = $("scan-market");
+  if (!knopf || knopf.disabled) {
+    chancenMeldung($("market-scan-msg").textContent || "Der Markt-Scan geht gerade nicht.", "warn");
+    return;
+  }
+  knopf.click();
+  chancenMeldung("Markt wird gescannt … Der Scan kauft nichts, er füllt nur den Preisverlauf.", "");
+}
+
+// --- Assistent -------------------------------------------------------------
+
+function assistentZustand() {
+  const st = letzterStatus;
+  const usage = (st && st.usage) || {};
+  const stapel = (st && st.stapel) || {};
+  const s = (st && st.stats) || {};
+  const zahlOderNull = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+  const auswahl = currentTarget();
+  const ziele = targets.length ? targets.filter((t) => !liveAbgelaufen(t)) : auswahl ? [auswahl] : [];
+  const preise = ziele.map((t) => Number(t.maxPrice) || 0).filter((p) => p > 0);
+  return {
+    verbunden: Boolean(st),
+    imEigenenFenster: !BOT,
+    session: Boolean(st && st.session),
+    laeuft: Boolean(st && st.running),
+    cooldownMin: st && st.cooldown ? Number(st.cooldown.leftMin) || 0 : 0,
+    cooldownGrund: st && st.cooldown ? st.cooldown.reason || "" : "",
+    fremderBot: Boolean(st && st.fremderBot),
+    andererTab: Boolean(st && st.andererTab),
+    ohneGrenzen: Boolean(st && st.fstModus),
+    suchenStunde: Number(usage.searchesHour) || 0,
+    gekauft: s.bought || 0,
+    ausgegeben: s.spent || 0,
+    transfer: stapel.at ? zahlOderNull(stapel.transfer) : null,
+    nichtZugewiesen: stapel.at ? zahlOderNull(stapel.nichtZugewiesen) : null,
+    nzUnbegrenzt: Boolean($("nichtZugewiesenUnbegrenzt") && $("nichtZugewiesenUnbegrenzt").checked),
+    coins: st ? zahlOderNull(st.credits) : null,
+    letzterStopp: (st && st.letzterStopp) || null,
+    jetzt: Date.now(),
+    ziele: ziele.length,
+    billigstesZiel: preise.length ? Math.min(...preise) : 0,
+    chancen: chancenFrisch(),
+    bestseller: radarDaten.bestseller,
+    daten: chancenStand
+  };
+}
+
+function assistentKnopf(a, haupt) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = haupt ? "go" : "secondary";
+  b.textContent = a.label;
+  b.dataset.aktion = a.id;
+  if (a.id === "stopp" && !(letzterStatus && letzterStatus.running)) b.disabled = true;
+  b.addEventListener("click", () => assistentAktion(a.id));
+  return b;
+}
+
+function renderAssistent() {
+  const box = $("assistent");
+  if (!box) return;
+  if (!ASSISTENT) {
+    box.hidden = true;
+    return;
+  }
+  // Ein Knopf, der nur zum Reiter fuehrt, auf dem man schon ist, faellt weg.
+  const offen = WURZEL.querySelector('.tab[aria-selected="true"]');
+  const offenId = offen ? offen.id : "";
+  const hinweise = ASSISTENT.lage(assistentZustand()).map((h) =>
+    Object.assign({}, h, { aktionen: h.aktionen.filter((a) => ASSISTENT_REITER[a.id] !== offenId) }));
+  const key = JSON.stringify([hinweise, Boolean(letzterStatus && letzterStatus.running)]);
+  if (key === assistentKey) return;
+  assistentKey = key;
+  const haupt = hinweise[0] || { ton: "gut", titel: "Alles bereit", text: "Gerade gibt es nichts zu tun.", aktionen: [] };
+  box.dataset.ton = haupt.ton;
+  $("assistent-titel").textContent = haupt.titel;
+  $("assistent-text").textContent = haupt.text;
+  const mitBalken = typeof haupt.fortschritt === "number";
+  $("assistent-fortschritt").hidden = !mitBalken;
+  if (mitBalken) $("assistent-balken").style.width = Math.round(haupt.fortschritt * 100) + "%";
+  $("assistent-knoepfe").replaceChildren(...haupt.aktionen.map((a, i) => assistentKnopf(a, i === 0)));
+  $("assistent-knoepfe").hidden = !haupt.aktionen.length;
+  const rest = hinweise.slice(1, 5);
+  $("assistent-mehr").hidden = !rest.length;
+  $("assistent-mehr-titel").textContent = rest.length === 1 ? "1 weiterer Hinweis" : rest.length + " weitere Hinweise";
+  $("assistent-mehr-liste").replaceChildren(...rest.map((h) => {
+    const li = document.createElement("li");
+    li.dataset.ton = h.ton;
+    const t = document.createElement("b");
+    t.textContent = h.titel;
+    const text = document.createElement("span");
+    text.textContent = h.text;
+    li.append(t, text);
+    if (h.aktionen.length) li.append(assistentKnopf(h.aktionen[0], false));
+    return li;
+  }));
+}
+
+function assistentAktion(id) {
+  if (id === "chancen" || id === "bestseller") {
+    selectTab($("tab-chancen"), false);
+    radarZeigen(id);
+  }
+  else if (id === "kaeufe") selectTab($("tab-buys"), false);
+  else if (id === "snipen") selectTab($("tab-snipe"), false);
+  else if (id === "stopp") $("stop").click();
+  else if (id === "scan") {
+    selectTab($("tab-chancen"), false);
+    marktScannen();
+  } else if (id === "neuladen") seiteNeuLaden();
+  else if (id === "webapp") chrome.tabs.create({ url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/" }).catch(() => {});
+}
+
+// In der Seite: die Web App selbst neu laden. Im eigenen Fenster: den
+// Web-App-Tab neu laden (oder einen oeffnen, wenn keiner da ist).
+async function seiteNeuLaden() {
+  if (BOT) {
+    location.reload();
+    return;
+  }
+  const tab = await webAppTab();
+  if (tab) chrome.tabs.reload(tab.id).catch(() => {});
+  else chrome.tabs.create({ url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/" }).catch(() => {});
+}
+
+// --- Einfach / Profi ---------------------------------------------------------
+
+function ansichtSetzen(wert, speichern) {
+  ansicht = wert === "einfach" ? "einfach" : "profi";
+  const ziel = WURZEL === document ? document.documentElement : WURZEL.querySelector(".blatt");
+  if (ziel) ziel.classList.toggle("einfach", ansicht === "einfach");
+  for (const b of WURZEL.querySelectorAll("#ansicht-wahl button")) {
+    const an = b.dataset.ansicht === ansicht;
+    b.classList.toggle("active", an);
+    b.setAttribute("aria-checked", String(an));
+  }
+  // Ein offener Reiter, den es in Einfach nicht gibt: zurueck zu Snipen.
+  const offen = tabList.find((t) => t.getAttribute("aria-selected") === "true");
+  if (ansicht === "einfach" && offen && offen.hasAttribute("data-profi")) selectTab($("tab-snipe"), false);
+  if (speichern) chrome.storage.local.set({ uiAnsicht: ansicht }).catch(() => {});
+}
+
+for (const b of WURZEL.querySelectorAll("#ansicht-wahl button")) {
+  b.addEventListener("click", () => ansichtSetzen(b.dataset.ansicht, true));
+}
+
+// --- Einfuehrung -------------------------------------------------------------
+
+function tourZeichnen() {
+  for (const seite of WURZEL.querySelectorAll("#tour-wrap .tour-seite")) seite.hidden = Number(seite.dataset.seite) !== tourSeite;
+  WURZEL.querySelectorAll("#tour-wrap .tour-punkte i").forEach((punkt, i) => punkt.classList.toggle("an", i + 1 === tourSeite));
+  $("tour-zurueck").textContent = tourSeite === 1 ? "Überspringen" : "Zurück";
+  $("tour-weiter").textContent = tourSeite === TOUR_SEITEN ? "Los geht's" : "Weiter";
+  // Seite 3: die Wahl zeigt, was gerade eingestellt ist.
+  const fst = Boolean($("fstModus") && $("fstModus").checked);
+  for (const option of WURZEL.querySelectorAll("#tour-wrap .tour-option")) {
+    const an = (option.dataset.fst === "true") === fst;
+    option.classList.toggle("an", an);
+    option.setAttribute("aria-checked", String(an));
+  }
+}
+
+function tourOeffnen() {
+  tourSeite = 1;
+  tourZeichnen();
+  $("tour-wrap").hidden = false;
+  nachObenScrollen();
+  $("tour-weiter").focus();
+}
+
+function tourSchliessen() {
+  $("tour-wrap").hidden = true;
+  chrome.storage.local.set({ tourV1: Date.now() }).catch(() => {});
+}
+
+$("tour-weiter").addEventListener("click", () => {
+  if (tourSeite >= TOUR_SEITEN) tourSchliessen();
+  else {
+    tourSeite += 1;
+    tourZeichnen();
+  }
+});
+$("tour-zurueck").addEventListener("click", () => {
+  if (tourSeite <= 1) tourSchliessen();
+  else {
+    tourSeite -= 1;
+    tourZeichnen();
+  }
+});
+for (const option of WURZEL.querySelectorAll("#tour-wrap .tour-option")) {
+  option.addEventListener("click", () => {
+    const fst = option.dataset.fst === "true";
+    if ($("fstModus").checked !== fst) {
+      $("fstModus").checked = fst;
+      // Derselbe Weg wie ein Klick in den Optionen: speichern, Hinweis, Status.
+      $("fstModus").dispatchEvent(new Event("change"));
+    }
+    tourZeichnen();
+  });
+}
+WURZEL.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("tour-wrap").hidden) {
+    event.preventDefault();
+    tourSchliessen();
+  }
+});
+if ($("tour-nochmal")) $("tour-nochmal").addEventListener("click", tourOeffnen);
+$("chancen-scan").addEventListener("click", marktScannen);
+
+// Was beim ersten Oeffnen gilt. Der Speicher wird VOR loadSettings gelesen:
+// loadSettings speichert bei neuen Nutzern sofort, danach waere nicht mehr zu
+// erkennen, ob es vorher schon Einstellungen gab.
+const ersterStartStand = chrome.storage.local.get(["settings", "uiAnsicht", "tourV1", "radarListe"]).catch(() => ({}));
+
+async function ersterStartAnwenden() {
+  const roh = (await ersterStartStand) || {};
+  const neu = !roh.settings;
+  // Neue Nutzer starten einfach, Bestandsnutzer behalten alles, wie es war.
+  ansichtSetzen(roh.uiAnsicht === "einfach" || roh.uiAnsicht === "profi" ? roh.uiAnsicht : neu ? "einfach" : "profi", false);
+  if (typeof roh.radarListe === "string" && RADAR_ERKLAERUNG[roh.radarListe]) {
+    radarListe = roh.radarListe;
+    chancenKey = "";
+    renderChancen();
+  }
+  radarAutoAbgleichen();
+  if (neu && !roh.tourV1) tourOeffnen();
+}
+
 // Neue Daten, waehrend das Popup offen ist? Direkt uebernehmen.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.playerList) loadPlayers().then(() => { renderSuggestions(); renderLiveFilters(); });
+  // 02.10.2026: Chancen neu rechnen - sie tragen die Spielernamen aus der Liste.
+  if (changes.playerList) loadPlayers().then(() => { renderSuggestions(); renderLiveFilters(); chancenRechnen(); renderChancen(); });
   // 28.09.2026: aktivLog gehoert dazu - sonst zeigt die Konkurrenz-Kachel
   // neue Laufmessungen erst nach dem naechsten Oeffnen des Popups.
   if (changes.priceHistory || changes.runStats || changes.purchases || changes.liveMarketResults || changes.aktivLog) loadData().then(renderVerkauf);
   if (changes.transferliste || changes.verkaeufe) loadVerkauf();
+  // 02.10.2026: neuer Preisverlauf aus content.js -> Chancen und Assistent.
+  if (changes.marktVerlauf || changes.marktVerkaeufe) loadMarkt();
   if (changes.playerImages) {
     loadImages().then(() => {
       renderSuggestions();
@@ -9801,7 +10706,8 @@ if (!BOT && (!chrome.scripting || typeof chrome.scripting.executeScript !== "fun
   $("scan-market").disabled = true;
   setTimeout(() => chrome.runtime.reload(), 800);
 } else {
-  loadImages().then(loadSettings).then(loadPlayers).then(loadData).then(loadVerkauf).then(loadCollections).then(renderStep).then(poll);
+  loadImages().then(loadSettings).then(loadPlayers).then(loadData).then(loadVerkauf).then(loadCollections).then(renderStep)
+    .then(loadMarkt).then(ersterStartAnwenden).then(poll);
   setInterval(poll, 1500);
 }
 }
